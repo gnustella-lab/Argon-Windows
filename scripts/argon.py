@@ -36,6 +36,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -515,7 +516,7 @@ def mozconfig_lines(workspace, lock, artifact=False, mozconfig_path=None):
         if platform_compat.is_windows():
             redist_dir = platform_compat.find_windows_redist_dir()
             if redist_dir is not None:
-                lines.append(f"ac_add_options --with-redist={redist_dir.as_posix()}")
+                lines.append(f"ac_add_options {shlex.quote(f'--with-redist={redist_dir.as_posix()}')}")
     objdir = workspace.obj.as_posix() if platform_compat.is_windows() else str(workspace.obj)
     lines.append(f"mk_add_options MOZ_OBJDIR={objdir}")
     return lines

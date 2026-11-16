@@ -112,6 +112,23 @@ class WindowsRuntimeContractTests(unittest.TestCase):
         for forbidden in ("MOZ_REQUIRE_SIGNING", "--with-unsigned-addon-scopes", "--allow-addon-sideload", "MOZILLA_OFFICIAL"):
             self.assertNotIn(forbidden, active)
 
+        argon_mod = load_module("argon_build_check", REPO / "scripts" / "argon.py")
+        import shlex
+        import tempfile
+
+        spaceful_redist = Path(r"C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT")
+        with tempfile.TemporaryDirectory(prefix="argon-mozcfg-") as tmp:
+            ws_dir = Path(tmp).resolve() / "ws"
+            ws = argon_mod.Workspace(REPO, ws_dir)
+            lock = argon_mod.load_json(REPO / "config" / "firefox.lock.json", "lock")
+            with mock.patch.object(argon_mod.platform_compat, "is_windows", return_value=True), \
+                 mock.patch.object(argon_mod.platform_compat, "find_windows_redist_dir", return_value=spaceful_redist):
+                generated = argon_mod.mozconfig_lines(ws, lock, artifact=False, mozconfig_path=REPO / "config" / "mozconfig.windows")
+            redist_lines = [ln for ln in generated if "--with-redist" in ln]
+            self.assertEqual(len(redist_lines), 1)
+            tokens = shlex.split(redist_lines[0])
+            self.assertEqual(tokens, ["ac_add_options", f"--with-redist={spaceful_redist.as_posix()}"])
+
     def test_native_adblock_supports_optional_windows_dll_without_requiring_cargo(self):
         native_js = (REPO / "argon" / "adblock" / "native.sys.mjs").read_text(encoding="utf-8")
         self.assertIn("WINNT:", native_js)
