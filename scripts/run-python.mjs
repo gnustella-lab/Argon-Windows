@@ -8,8 +8,8 @@
  * helper discovers a real Python >= 3.9 interpreter cleanly via:
  *   1. ARGON_PYTHON
  *   2. Active virtualenv / conda (VIRTUAL_ENV / CONDA_PREFIX)
- *   3. Windows `py -3` launcher
- *   4. Non-Store `python3` / `python` binaries on PATH
+ *   3. Non-Store `python3` / `python` binaries on PATH
+ *   4. Windows `py -3` launcher
  *   5. MozillaBuild Python (`MOZILLABUILD` / `C:\mozilla-build\python3`)
  *   6. Standard Python 3 install directories on Windows
  */
@@ -163,6 +163,24 @@ function windowsInstallCandidates(env = process.env) {
   return matches.map((m) => m.exe);
 }
 
+function firstWorkingPython(candidates, seen, isWin) {
+  for (const candidate of candidates) {
+    const key = isWin ? path.resolve(candidate).toLowerCase() : path.resolve(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (!fs.existsSync(candidate) || isWindowsStoreAlias(candidate)) {
+      continue;
+    }
+    const probed = probePython(candidate);
+    if (probed) {
+      return probed;
+    }
+  }
+  return null;
+}
+
 export function findPython(env = process.env) {
   const explicit = (env.ARGON_PYTHON || "").trim();
   if (explicit) {
@@ -185,12 +203,22 @@ export function findPython(env = process.env) {
 
   const isWin = process.platform === "win32";
   const candidates = [];
+  const seen = new Set();
 
   if (isWin) {
     for (const envKey of ["VIRTUAL_ENV", "CONDA_PREFIX"]) {
       if (env[envKey]) {
         candidates.push(path.join(env[envKey], "Scripts", "python.exe"));
       }
+    }
+
+    for (const name of ["python3", "python"]) {
+      candidates.push(...whichAll(name, env));
+    }
+
+    const foundPrimary = firstWorkingPython(candidates, seen, isWin);
+    if (foundPrimary) {
+      return foundPrimary;
     }
 
     for (const pyLauncher of whichAll("py", env)) {
@@ -211,10 +239,7 @@ export function findPython(env = process.env) {
       }
     }
 
-    for (const name of ["python3", "python"]) {
-      candidates.push(...whichAll(name, env));
-    }
-
+    candidates.length = 0;
     const mozBuildRoots = [];
     if (env.MOZILLABUILD) {
       mozBuildRoots.push(env.MOZILLABUILD);
@@ -240,23 +265,7 @@ export function findPython(env = process.env) {
     }
   }
 
-  const seen = new Set();
-  for (const candidate of candidates) {
-    const key = isWin ? path.resolve(candidate).toLowerCase() : path.resolve(candidate);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    if (!fs.existsSync(candidate) || isWindowsStoreAlias(candidate)) {
-      continue;
-    }
-    const probed = probePython(candidate);
-    if (probed) {
-      return probed;
-    }
-  }
-
-  return null;
+  return firstWorkingPython(candidates, seen, isWin);
 }
 
 export function runPython(args, options = {}) {

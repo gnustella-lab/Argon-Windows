@@ -133,6 +133,38 @@ class PlatformCompatTests(unittest.TestCase):
         self.assertFalse(self.pc.is_safe_workspace_path(Path.home(), REPO))
         self.assertFalse(self.pc.is_safe_workspace_path(REPO, REPO))
 
+        if self.pc.is_windows():
+            long_root = self.root / "runneradmin_like_dir"
+            long_root.mkdir()
+            short_root = Path(r"C:\Users\RUNNER~1\AppData\Local\Temp\argon-short-test")
+            expected_long = Path(r"C:\Users\runneradmin\AppData\Local\Temp\argon-short-test")
+            with mock.patch.object(
+                self.pc,
+                "normalize_windows_long_path",
+                side_effect=lambda p: (
+                    expected_long / Path(p).name
+                    if str(p).startswith(str(short_root)) and "~" not in Path(p).name
+                    else (expected_long / Path(p).name if p == short_root else Path(p).absolute())
+                ),
+            ):
+                self.assertEqual(self.pc.no_symlinks(short_root / "ws"), expected_long / "ws")
+                self.assertTrue(self.pc.is_safe_workspace_path(short_root / "ws", REPO))
+                self.assertFalse(self.pc.is_safe_workspace_path(self.root / "bad~dir", REPO))
+                self.assertFalse(self.pc.is_safe_workspace_path(short_root / "bad~dir", REPO))
+
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_short = kernel32.GetShortPathNameW
+            get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+            get_short.restype = ctypes.c_uint32
+            buf = ctypes.create_unicode_buffer(512)
+            slen = get_short(str(long_root), buf, len(buf))
+            if slen and "~" in buf.value:
+                short_real = Path(buf.value) / "ws"
+                self.assertEqual(self.pc.no_symlinks(short_real), long_root.resolve() / "ws")
+                self.assertTrue(self.pc.is_safe_workspace_path(short_real, REPO))
+
         actual = self.root / "real"
         actual.mkdir()
         if self.pc.is_windows():

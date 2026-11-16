@@ -24,7 +24,7 @@ Toolchain baselines verified against Argon's pinned Firefox revision (`d9bd6be9a
 
 Windows 10/11 ships 0-byte App Execution Aliases (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe` and `python3.exe`) on `PATH` that fail or launch Microsoft Store when invoked.
 
-- All `package.json` scripts invoke `node scripts/run-python.mjs ...`, which automatically skips Microsoft Store stubs and checks, in order: `ARGON_PYTHON`, active `VIRTUAL_ENV`/`CONDA_PREFIX`, `py -3`, real `python3`/`python` on `PATH`, MozillaBuild Python (`C:\mozilla-build\python3`), and standard Windows Python installations.
+- All `package.json` scripts invoke `node scripts/run-python.mjs ...`, which automatically skips Microsoft Store stubs and checks, in order: `ARGON_PYTHON`, active `VIRTUAL_ENV`/`CONDA_PREFIX`, real `python3`/`python` on `PATH`, Windows `py -3`, MozillaBuild Python (`C:\mozilla-build\python3`), and standard Windows Python installations.
 - If Python lives in a custom location, set `ARGON_PYTHON`:
 
 ```powershell

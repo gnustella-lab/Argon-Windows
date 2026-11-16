@@ -59,6 +59,7 @@ jobs:
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
 
           # Reclaim optional pre-installed caches/toolchains when running on ephemeral hosted runners.
+          # Use cmd `rd /s /q` first because PowerShell Remove-Item is much slower on deep NTFS trees.
           foreach ($pattern in @(
             "C:\Android",
             "C:\Program Files (x86)\Android",
@@ -81,8 +82,14 @@ jobs:
             "$env:USERPROFILE\.nuget\packages"
           )) {
             Get-Item -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "Removing $($_.FullName)..."
-              Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+              $target = $_.FullName
+              Write-Host "Removing $target..."
+              if ($_.PSIsContainer) {
+                cmd /c "rd /s /q `"$target`" >nul 2>&1"
+              }
+              if (Test-Path $target) {
+                Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue
+              }
             }
           }
 

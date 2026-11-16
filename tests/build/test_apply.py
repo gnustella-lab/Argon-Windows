@@ -20,7 +20,7 @@ import support
 class ApplyTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="argon-apply-")
-        self.tmp = Path(self._tmp.name)
+        self.tmp = Path(self._tmp.name).resolve()
         self.workspace = self.tmp / "workspace"
         self.workspace.mkdir()
         self.source = self.workspace / "source"

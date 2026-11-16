@@ -71,6 +71,42 @@ def is_symlink_or_junction(path: Path) -> bool:
     return False
 
 
+def normalize_windows_long_path(path: str | Path) -> Path:
+    """Resolve existing Windows 8.3 short-path components (e.g. RUNNER~1) without following symlinks."""
+    resolved = Path(path).absolute()
+    if not is_windows():
+        return resolved
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_long = kernel32.GetLongPathNameW
+        get_long.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_long.restype = ctypes.c_uint32
+    except (AttributeError, OSError):
+        return resolved
+
+    tail: list[str] = []
+    cur = resolved
+    while not cur.exists():
+        parent = cur.parent
+        if parent == cur:
+            return resolved
+        tail.append(cur.name)
+        cur = parent
+
+    raw_cur = str(cur)
+    needed = get_long(raw_cur, None, 0)
+    if needed <= 0:
+        return resolved
+    buf = ctypes.create_unicode_buffer(needed + 1)
+    copied = get_long(raw_cur, buf, len(buf))
+    if copied <= 0 or copied >= len(buf):
+        return resolved
+    long_path = Path(buf.value)
+    for part in reversed(tail):
+        long_path = long_path / part
+    return long_path
+
+
 def no_symlinks(path: str | Path, error_cls=ValueError) -> Path:
     """Reject '..' traversal, symlinks, and NTFS junctions in any component."""
     resolved = Path(path).absolute()
@@ -78,6 +114,13 @@ def no_symlinks(path: str | Path, error_cls=ValueError) -> Path:
         is_symlink_or_junction(p) for p in (resolved, *resolved.parents)
     ):
         raise error_cls(f"Unsafe path (traversal or symlink): {resolved}")
+    if is_windows():
+        normalized = normalize_windows_long_path(resolved)
+        if ".." in normalized.parts or any(
+            is_symlink_or_junction(p) for p in (normalized, *normalized.parents)
+        ):
+            raise error_cls(f"Unsafe path (traversal or symlink): {normalized}")
+        return normalized
     return resolved
 
 
@@ -88,23 +131,26 @@ def norm_path_key(path: Path) -> str:
 
 def is_safe_workspace_path(path: Path, repo: Path) -> bool:
     """Validate an ASCII, space-free, dedicated workspace path outside repo/home/root."""
-    raw = str(path)
+    check_path = normalize_windows_long_path(path) if is_windows() else path
+    check_repo = normalize_windows_long_path(repo) if is_windows() else repo
+    raw = str(check_path)
     if is_windows():
         normalized = raw.rstrip("\\/")
-        if path == Path(path.anchor) or len(path.parts) <= 1:
+        if check_path == Path(check_path.anchor) or len(check_path.parts) <= 1:
             return False
         if not WINDOWS_RESERVED_PATH_RE.fullmatch(normalized):
             return False
     else:
-        if path == Path("/") or not POSIX_SAFE_PATH_RE.fullmatch(raw):
+        if check_path == Path("/") or not POSIX_SAFE_PATH_RE.fullmatch(raw):
             return False
 
-    key = norm_path_key(path)
+    home_path = normalize_windows_long_path(Path.home()) if is_windows() else Path.home()
+    key = norm_path_key(check_path)
     disallowed = {
-        norm_path_key(Path(path.anchor)) if path.anchor else "/",
-        norm_path_key(Path.home()),
-        norm_path_key(repo),
-        *(norm_path_key(parent) for parent in repo.parents),
+        norm_path_key(Path(check_path.anchor)) if check_path.anchor else "/",
+        norm_path_key(home_path),
+        norm_path_key(check_repo),
+        *(norm_path_key(parent) for parent in check_repo.parents),
     }
     return key not in disallowed
 
@@ -399,6 +445,26 @@ def _windows_python_install_candidates() -> list[Path]:
     return [exe for _, exe in found]
 
 
+def _first_working_python(
+    candidates: list[str | Path],
+    *,
+    min_version: tuple[int, int],
+    seen: set[str],
+) -> str | None:
+    for candidate in candidates:
+        cand_path = Path(candidate)
+        key = norm_path_key(cand_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not cand_path.is_file() or is_windows_store_stub(cand_path):
+            continue
+        probed = _probe_python_executable(cand_path, min_version=min_version)
+        if probed:
+            return probed
+    return None
+
+
 def find_python(*, min_version: tuple[int, int] = (3, 9), include_current: bool = False) -> str | None:
     """Discover a real Python >= min_version interpreter, filtering out WindowsApps Store aliases."""
     explicit = os.environ.get("ARGON_PYTHON", "").strip()
@@ -414,12 +480,20 @@ def find_python(*, min_version: tuple[int, int] = (3, 9), include_current: bool 
                 return probed
 
     candidates: list[str | Path] = []
+    seen: set[str] = set()
 
     if is_windows():
         for env_key in ("VIRTUAL_ENV", "CONDA_PREFIX"):
             base = os.environ.get(env_key)
             if base:
                 candidates.append(Path(base) / "Scripts" / "python.exe")
+
+        for cmd_name in ("python3", "python"):
+            candidates.extend(which_all(cmd_name))
+
+        found = _first_working_python(candidates, min_version=min_version, seen=seen)
+        if found:
+            return found
 
         probe_code = (
             f"import sys; print(sys.executable); "
@@ -444,9 +518,7 @@ def find_python(*, min_version: tuple[int, int] = (3, 9), include_current: bool 
             except (OSError, subprocess.SubprocessError):
                 pass
 
-        for cmd_name in ("python3", "python"):
-            candidates.extend(which_all(cmd_name))
-
+        candidates = []
         mb = find_mozilla_build()
         if mb:
             candidates.extend([
@@ -462,18 +534,9 @@ def find_python(*, min_version: tuple[int, int] = (3, 9), include_current: bool 
         for cmd_name in ("python3", "python"):
             candidates.extend(which_all(cmd_name))
 
-    seen: set[str] = set()
-    for candidate in candidates:
-        cand_path = Path(candidate)
-        key = norm_path_key(cand_path)
-        if key in seen:
-            continue
-        seen.add(key)
-        if not cand_path.is_file() or is_windows_store_stub(cand_path):
-            continue
-        probed = _probe_python_executable(cand_path, min_version=min_version)
-        if probed:
-            return probed
+    found = _first_working_python(candidates, min_version=min_version, seen=seen)
+    if found:
+        return found
 
     if include_current and sys.executable:
         return _probe_python_executable(sys.executable, min_version=min_version)
