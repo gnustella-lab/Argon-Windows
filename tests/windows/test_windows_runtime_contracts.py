@@ -124,7 +124,10 @@ class WindowsRuntimeContractTests(unittest.TestCase):
             with mock.patch.object(argon_mod.platform_compat, "is_windows", return_value=True), \
                  mock.patch.object(argon_mod.platform_compat, "find_windows_redist_dir", return_value=spaceful_redist):
                 generated = argon_mod.mozconfig_lines(ws, lock, artifact=False, mozconfig_path=REPO / "config" / "mozconfig.windows")
-            redist_lines = [ln for ln in generated if "--with-redist" in ln]
+            redist_lines = [
+                ln for ln in generated
+                if ln.startswith("ac_add_options") and "--with-redist" in ln
+            ]
             self.assertEqual(len(redist_lines), 1)
             tokens = shlex.split(redist_lines[0])
             self.assertEqual(tokens, ["ac_add_options", f"--with-redist={spaceful_redist.as_posix()}"])
