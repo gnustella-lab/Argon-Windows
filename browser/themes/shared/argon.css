@@ -454,7 +454,7 @@
 }
 
 :root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"], [popup-window], [inFullscreen], [taskbartab]) #toolbar-menubar:is([autohide], [collapsed]) ~ #nav-bar > :is(.titlebar-buttonbox-container, .titlebar-spacer),
-:root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"]):is([popup-window], [inFullscreen], [taskbartab]) #nav-bar > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
+:root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"]):is([popup-window], [inFullscreen], [taskbartab]) #navigator-toolbox > #nav-bar > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
   display: flex;
 }
 
