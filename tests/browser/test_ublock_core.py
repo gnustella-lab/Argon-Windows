@@ -12,6 +12,8 @@ from marionette_driver.marionette import Marionette
 from marionette_driver.addons import Addons
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -59,12 +61,13 @@ class UBlockCore(unittest.TestCase):
             port = sock.getsockname()[1]
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS'] = '1'
         os.environ['MOZ_AUTOMATION'] = '1'
+        cls_workspace = workspace_dir()
         browser = Marionette(
-            bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')),
+            bin=argon_test_binary(),
             port=port,
             headless=True,
-            workspace=str(ROOT / '.cache/browser-tests'),
-            gecko_log=str(ROOT / 'artifacts/ublock-core-gecko.log'),
+            workspace=str(cls_workspace),
+            gecko_log=str(artifacts_dir() / 'ublock-core-gecko.log'),
             prefs={
                 'argon.onboarding.completed': True,
                 'extensions.update.enabled': False,
@@ -98,7 +101,7 @@ class UBlockCore(unittest.TestCase):
 
             # 2. Install a real WebExtension with uBlock Origin's ID that writes real storage.local uBO data,
             #    then run ArgonAdblock.migrateAndRemoveLegacyExtension({ includeTemporary: true }).
-            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR', str(ROOT / '.cache/browser-tests'))) as directory:
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR') or str(cls_workspace)) as directory:
                 xpi = Path(directory) / 'ublock-migration-fixture.xpi'
                 with zipfile.ZipFile(xpi, 'w') as archive:
                     archive.writestr('manifest.json', json.dumps({

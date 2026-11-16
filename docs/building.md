@@ -1,8 +1,9 @@
 # Building Argon
 
 Status: fork tooling, full Linux `x86_64` source compilation (`dist/bin/argon`),
-Marionette chrome smoke tests on the compiled binary, and `.flatpak`
-packaging are implemented and verified.
+Marionette chrome smoke tests on the compiled binary, `.flatpak` packaging,
+and Windows `x64` build/branding/portable-ZIP/NSIS-installer tooling are implemented.
+See [docs/windows.md](windows.md) for the clean-machine Windows 10/11 `x64` guide.
 
 Argon is a fork of LibreWolf (built on Firefox Desktop / Gecko). It does not restyle an installed Firefox or LibreWolf:
 it takes a pinned upstream source revision, applies the LibreWolf patch series and Argon's overlay to it,
@@ -10,7 +11,7 @@ and compiles a separate browser with its own binary, profile directory,
 remoting name, vendor, and branding. A running Firefox, LibreWolf, and Argon do
 not share profiles, windows, or URL hand-off.
 
-Argon exclusively supports **Linux via Flatpak** (`io.github.argon_browser.Argon`). Windows and macOS are not supported.
+Argon supports **Linux (`x86_64` via Flatpak `io.github.argon_browser.Argon`)** and **Windows 10/11 (`x64` portable ZIP and NSIS installer)**. macOS is not supported.
 
 ## How the fork is organised
 
@@ -21,9 +22,9 @@ Argon combines LibreWolf's patch series (`patches/`, `settings/`, `l10n/`, `scri
 | Upstream pin | `config/firefox.lock.json`, `version` | Exact upstream revision, archive SHA-256, artifact task, and the SHA-256 of every upstream file Argon patches |
 | LibreWolf patch series | `assets/patches.txt`, `patches/`, `settings/`, `l10n/` | Hardened privacy defaults, Linux XDG/D-Bus integration, and UI cleanups |
 | Argon overlay | `config/overlay.json` | Every file Argon adds and every upstream file it patches, as data |
-| Identity | `config/mozconfig`, `assets/mozconfig` | Build options that make the product Argon |
-| Tools | `scripts/argon.py`, `scripts/librewolf-patches.py` | fetch, apply, bootstrap, build, run, package, flatpak |
-| Argon sources | `browser/`, `argon/`, `packaging/flatpak/` | Chrome, branding, preferences, Argon modules, and Flatpak packaging |
+| Identity | `config/mozconfig`, `config/mozconfig.windows` | Build options that make the product Argon on Linux and Windows |
+| Tools | `scripts/argon.py`, `scripts/win_package.py`, `scripts/librewolf-patches.py`, `scripts/platform_compat.py` | fetch, apply, bootstrap, build, run, package, flatpak, win-portable, win-installer |
+| Argon sources | `browser/`, `argon/`, `packaging/flatpak/`, `packaging/windows/` | Chrome, branding, preferences, Argon modules, Flatpak and Windows packaging |
 
 Updating to a newer Firefox means changing the lock, re-running `apply`, and
 fixing whatever hooks report drift. That keeps the diff against upstream small
@@ -42,18 +43,22 @@ and reviewable.
 | Distribution id | `io.github.argon_browser.Argon` | `--with-distribution-id` |
 | Updater, crash reporter | disabled | no Argon update or crash server exists yet |
 
-Two values intentionally stay upstream:
+Two values intentionally keep upstream Firefox compatibility:
 
 - **`MOZ_APP_ID`** stays Firefox's id. WebExtensions on addons.mozilla.org
   declare compatibility against it; keeping it is what lets Argon install AMO
   add-ons natively.
-- **The User-Agent** keeps Firefox's product token (`MOZ_APP_UA_NAME` is
-  empty), so sites that sniff the UA do not treat Argon as an unknown browser.
+- **The User-Agent** implies `MOZ_APP_UA_NAME` to `"Firefox"` in
+  `browser/moz.configure` (via `config/overlay.json`), because upstream
+  `nsHttpHandler.cpp` falls back to `MOZ_APP_DISPLAYNAME` (`Argon`) when
+  `MOZ_APP_UA_NAME` is empty; keeping `"Firefox"` prevents sites from breaking
+  on an unknown product token.
 
-`MOZ_APP_VENDOR` and `MOZ_APP_PROFILE` are patched in `browser/moz.configure`
-instead of `config/mozconfig` because `toolkit/moz.configure` declares both
-with `project_flag()`, which restricts `possible_origins` to `("implied",)`;
-setting them from the environment or mozconfig would make configure fail.
+`MOZ_APP_VENDOR`, `MOZ_APP_PROFILE`, and `MOZ_APP_UA_NAME` are patched in
+`browser/moz.configure` instead of `config/mozconfig` because
+`toolkit/moz.configure` declares `project_flag()` options whose
+`possible_origins` reject mozconfig/environment overrides (`("implied",)` for
+vendor/profile); setting them via `imply_option()` keeps configure valid.
 
 ## Commands
 
@@ -93,7 +98,9 @@ python3 scripts/argon.py flatpak --gpg-sign <KEY_ID>
 python3 scripts/argon.py verify-flatpak --require-full-omni --bundle .cache/dist/argon-0.1.0.en-US.linux-x86_64.flatpak
 ```
 
-The same commands are available as `npm run doctor|fetch|apply|bootstrap|build|start|package|flatpak|verify:flatpak`.
+The same commands are available as `npm run doctor|fetch|apply|bootstrap|build|start|package|stage:runtime|flatpak|verify:flatpak|win:portable|win:installer|verify:windows` (via `node scripts/run-python.mjs`, which discovers Python cross-platform and ignores Windows Store `WindowsApps` stubs).
+
+For Windows `x64` packaging (`win-portable`, `win-installer`, `verify-windows`), MozillaBuild / MSVC / Windows SDK prerequisites, portable vs installer profile isolation, and Windows CI details, see [docs/windows.md](windows.md).
 
 The workspace defaults to `~/.cache/argon-build` (or `$XDG_CACHE_HOME/argon-build`);
 override it with `ARGON_WORKSPACE` or `--workspace`. It must be an ASCII path

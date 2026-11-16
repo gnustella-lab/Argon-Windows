@@ -79,7 +79,8 @@ class FetchTests(unittest.TestCase):
 
         source = self.workspace / "source"
         self.assertTrue((source / "mach").is_file())
-        self.assertEqual((source / "mach").stat().st_mode & 0o777, 0o755)
+        if os.name != "nt":
+            self.assertEqual((source / "mach").stat().st_mode & 0o777, 0o755)
         self.assertTrue((source / "browser/base/jar.mn").is_file())
 
         # The cached archive is kept so re-runs never hit the network again.

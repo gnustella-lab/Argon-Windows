@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 from marionette_driver.marionette import Marionette
 
+from _support import argon_test_binary, ensure_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts" / "chrome-smoke"
 WORKSPACE = ROOT / ".cache" / "browser-tests"
@@ -65,7 +67,8 @@ return out;
 
 
 def launch(name):
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    ensure_dir(ARTIFACTS)
+    ensure_dir(WORKSPACE)
     resources = Path(tempfile.mkdtemp(prefix=f"argon-{name}-", dir=WORKSPACE))
     for source in [
         ROOT / "argon/preferences/appearance.mjs",
@@ -80,9 +83,9 @@ def launch(name):
         port = sock.getsockname()[1]
     with patch.dict(os.environ, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}):
         browser = Marionette(
-            bin=os.environ.get("ARGON_TEST_BINARY", "/usr/lib/firefox/firefox"),
+            bin=argon_test_binary(fallback_to_firefox=True),
             port=port,
-            workspace=str(WORKSPACE),
+            workspace=str(workspace_dir()),
             headless=True,
             gecko_log=str(ARTIFACTS / f"{name}.log"),
             startup_timeout=90,

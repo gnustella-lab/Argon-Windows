@@ -24,6 +24,8 @@ import unittest
 from marionette_driver.marionette import Marionette
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -233,13 +235,12 @@ class AdblockLimits(unittest.TestCase):
 
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS'] = '1'
         os.environ['MOZ_AUTOMATION'] = '1'
-        (ROOT / 'artifacts').mkdir(exist_ok=True)
         cls.browser = Marionette(
-            bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')),
+            bin=argon_test_binary(),
             port=port,
             headless=True,
-            workspace=str(ROOT / '.cache/browser-tests'),
-            gecko_log=str(ROOT / 'artifacts/adblock-limits-gecko.log'),
+            workspace=str(workspace_dir()),
+            gecko_log=str(artifacts_dir() / 'adblock-limits-gecko.log'),
             prefs={
                 'argon.onboarding.completed': True,
                 'extensions.update.enabled': False,

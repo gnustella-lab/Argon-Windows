@@ -1,0 +1,272 @@
+# Full Argon Browser Windows x86_64 source build on GitHub Actions.
+#
+# Separates the heavy Windows Gecko compilation from fast PR checks in ci.yml.
+#
+# Runner requirements (verified against pinned Firefox d9bd6be9):
+#   - OS: Windows 10/11 or Windows Server 2022+ (x64)
+#   - RAM: 8 GB minimum, 16 GB+ recommended (with pagefile for Rust LTO & libxul)
+#   - Disk: ~55-65 GB free space on an ASCII, space-free workspace path
+#     (upstream source ~4 GB, objdir ~30 GB, .mozbuild/VS/LLVM/Rust ~12 GB)
+#   - Runtime: ~90-240 minutes cold compile on 4 cores without warm sccache
+#
+# Standard GitHub-hosted `windows-latest` runner note:
+#   Standard `windows-latest` runners only provide ~14-35 GB free disk even after
+#   pruning unused toolcaches, and have a hard 360-minute job timeout. Therefore
+#   this workflow triggers on manual dispatch (where a larger or self-hosted
+#   Windows runner can be selected via `inputs.runner`) and release tags `v*`,
+#   and never simulates or skips failed Gecko compilation.
+
+name: Build Argon Browser (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel compile jobs (--jobs)"
+        required: false
+        default: "4"
+        type: string
+      runner:
+        description: "GitHub runner label (windows-latest, larger Windows runner, or self-hosted)"
+        required: false
+        default: "windows-latest"
+        type: string
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: argon-build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-x86_64:
+    name: Full Argon build (win64)
+    runs-on: ${{ inputs.runner || 'windows-latest' }}
+    timeout-minutes: 360
+    env:
+      MOZILLABUILD: C:\mozilla-build
+    steps:
+      - name: Check runner RAM/disk and free unused toolcaches
+        shell: pwsh
+        run: |
+          $ramGiB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+          Write-Host "Host RAM: $ramGiB GiB"
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
+
+          # Reclaim optional pre-installed caches when running on ephemeral hosted runners.
+          foreach ($dir in @(
+            "C:\Android",
+            "C:\hostedtoolcache\windows\CodeQL",
+            "C:\ProgramData\chocolatey\lib",
+            "C:\Program Files\Microsoft SDKs\Azure"
+          )) {
+            if (Test-Path $dir) {
+              Remove-Item -Path $dir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 } | Sort-Object Free -Descending
+          $best = $drives[0]
+          $freeGiB = [math]::Round($best.Free / 1GB, 2)
+          $root = "$($best.Name):"
+          Write-Host "Selected largest drive $root ($freeGiB GiB free)"
+          if ($freeGiB -lt 55) {
+            Write-Warning "Only $freeGiB GiB free on $root; a cold Windows Gecko source build typically needs 55-65 GiB free. Standard GitHub-hosted windows-latest runners may run out of disk or exceed 360 minutes without a larger/self-hosted runner."
+          }
+
+          "ARGON_WORKSPACE=$root\argon-build" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MOZBUILD_STATE_PATH=$root\.mozbuild" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_HOME=$root\.cargo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUSTUP_HOME=$root\.rustup" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run fast unit, contract, and Windows packaging tests before building
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/adblock-policy.mjs verify --evidence docs/parity-evidence.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:dev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs -m unittest discover -s tests/windows -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Ensure MozillaBuild >= 4.0 and NSIS are available
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "$env:MOZILLABUILD\start-shell.bat")) {
+            choco install mozillabuild -y --no-progress
+          }
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+          if (Test-Path "C:\Program Files (x86)\NSIS") {
+            "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if (Test-Path "$env:MOZILLABUILD\VERSION") {
+            Write-Host "MozillaBuild VERSION: $(Get-Content "$env:MOZILLABUILD\VERSION")"
+          }
+
+      - name: Initialize Argon workspace before cache restore
+        run: node scripts/run-python.mjs -c "import sys; sys.path.insert(0, 'scripts'); import argon; argon.Workspace(argon.REPO, argon.default_workspace()).claim()"
+
+      - name: Cache bootstrapped Mozilla toolchains and pinned source archive
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.MOZBUILD_STATE_PATH }}\clang
+            ${{ env.MOZBUILD_STATE_PATH }}\cbindgen
+            ${{ env.MOZBUILD_STATE_PATH }}\node
+            ${{ env.MOZBUILD_STATE_PATH }}\nasm
+            ${{ env.MOZBUILD_STATE_PATH }}\pkgconf
+            ${{ env.MOZBUILD_STATE_PATH }}\dump_syms
+            ${{ env.MOZBUILD_STATE_PATH }}\wasi-sysroot
+            ${{ env.MOZBUILD_STATE_PATH }}\vs
+            ${{ env.MOZBUILD_STATE_PATH }}\nsis
+            ${{ env.MOZBUILD_STATE_PATH }}\indices
+            ${{ env.CARGO_HOME }}\bin
+            ${{ env.RUSTUP_HOME }}
+            ${{ env.ARGON_WORKSPACE }}\.argon-workspace.json
+            ${{ env.ARGON_WORKSPACE }}\cache
+          key: argon-toolchains-win64-${{ hashFiles('config/firefox.lock.json') }}
+
+      - name: Fetch pinned Firefox source and apply Argon fork changes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm run fetch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run apply
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Bootstrap compilers/SDK and inspect doctor report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm run bootstrap
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run doctor
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Argon Browser (dist/bin/argon.exe)
+        run: node scripts/run-python.mjs scripts/argon.py --jobs "${{ inputs.jobs || '4' }}" build
+
+      - name: Verify independent Argon application identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:ARGON_WORKSPACE "obj\dist\bin\argon.exe"
+          $appIni = Join-Path $env:ARGON_WORKSPACE "obj\dist\bin\application.ini"
+          if (-not (Test-Path $bin)) { throw "Missing $bin" }
+          if (-not (Test-Path $appIni)) { throw "Missing $appIni" }
+          $ini = Get-Content $appIni
+          $ini | Write-Host
+          foreach ($expected in @("Name=Argon", "Vendor=Argon", "Profile=argon", "RemotingName=argon")) {
+            if ($ini -notcontains $expected) { throw "application.ini missing $expected" }
+          }
+          $ver = (& $bin --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "argon.exe --version exited with $LASTEXITCODE" }
+          Write-Host "argon.exe --version -> $ver"
+          if ($ver -notmatch "Argon") { throw "argon.exe --version did not report Argon" }
+
+      - name: Run Marionette browser regression suites against compiled Argon binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/run-python.mjs -m venv .cache\ci-venv
+          .cache\ci-venv\Scripts\python.exe -m pip install -r tests\browser\requirements.txt
+          $testRuntime = Join-Path $env:ARGON_WORKSPACE "obj\dist\argon-test-runtime"
+          try {
+            node scripts/run-python.mjs scripts/argon.py stage-runtime --output $testRuntime
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $env:ARGON_TEST_BINARY = Join-Path $testRuntime "argon.exe"
+            foreach ($suite in @(
+              "tests/browser/test_chrome.py",
+              "tests/browser/test_adblock.py",
+              "tests/browser/test_ublock_cosmetic.py",
+              "tests/browser/test_ghostprint.py",
+              "tests/browser/test_workspaces.py",
+              "tests/browser/test_customization.py",
+              "tests/browser/test_onboarding.py",
+              "tests/browser/test_settings.py",
+              "tests/browser/test_i18n.py"
+            )) {
+              Write-Host "Running $suite..."
+              & .cache\ci-venv\Scripts\python.exe $suite
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          } finally {
+            if (Test-Path $testRuntime) {
+              Remove-Item -Path $testRuntime -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Package and verify Windows portable ZIP and NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/run-python.mjs scripts/argon.py package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs scripts/argon.py win-portable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs scripts/argon.py win-installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs scripts/argon.py verify-windows --require-full-omni --run-portable-smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $distDir = Join-Path $env:ARGON_WORKSPACE "obj\dist"
+          Get-Content (Join-Path $distDir "SHA256SUMS")
+
+      - name: Upload packaged Windows portable ZIP, installer, and verification artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: argon-windows-x86_64
+          path: |
+            ${{ env.ARGON_WORKSPACE }}\obj\dist\argon-*.win64-portable.zip
+            ${{ env.ARGON_WORKSPACE }}\obj\dist\argon-*.win64.installer.exe
+            ${{ env.ARGON_WORKSPACE }}\obj\dist\SHA256SUMS
+            ${{ env.ARGON_WORKSPACE }}\obj\dist\bin\application.ini
+            artifacts/chrome-smoke/
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (tagged builds)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $distDir = Join-Path $env:ARGON_WORKSPACE "obj\dist"
+          Set-Location $distDir
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $prerelease = @()
+          if ($tag -match '(?i)(alpha|beta|rc)') {
+            $prerelease = @("--prerelease")
+          }
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "Argon Browser $tag" --generate-notes @prerelease
+          }
+          $assets = Get-ChildItem -File | Where-Object {
+            $_.Name -like "argon-*.win64-portable.zip" -or
+            $_.Name -like "argon-*.win64.installer.exe" -or
+            $_.Name -eq "SHA256SUMS"
+          } | ForEach-Object { $_.FullName }
+          gh release upload $tag --clobber @assets

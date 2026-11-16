@@ -15,6 +15,8 @@ from marionette_driver.marionette import Marionette
 from marionette_driver.by import By
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'artifacts/adblock-native'
 OUT.mkdir(parents=True, exist_ok=True)
@@ -33,8 +35,8 @@ with socket.socket() as sock:
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
 os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS'] = '1'
-browser = Marionette(bin=str(ROOT / '.cache/argon-dev/runtime/argon'), port=port,
-    headless=False, workspace=str(ROOT / '.cache/browser-tests'),
+browser = Marionette(bin=argon_test_binary(), port=port,
+    headless=False, workspace=str(workspace_dir()),
     gecko_log=str(OUT / 'gecko.log'), prefs={'argon.onboarding.completed': True,
     'extensions.update.enabled': False, 'extensions.update.autoUpdateDefault': False,
     'argon.theme': 'dark'})

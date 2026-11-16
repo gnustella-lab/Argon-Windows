@@ -1,4 +1,5 @@
 """Offline tests for the isolated, no-compile browser development loop."""
+import ctypes
 import importlib.util
 import json
 import os
@@ -10,10 +11,130 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/dev-browser.py"
+_WIN_FAKE_BROWSER_BYTES = None
+
+
+def _find_csc():
+    if os.name != "nt":
+        return None
+    win_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    for candidate in (
+        win_dir / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe",
+        win_dir / "Microsoft.NET" / "Framework" / "v4.0.30319" / "csc.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("csc.exe")
+
+
+def _fake_browser_exe_bytes():
+    global _WIN_FAKE_BROWSER_BYTES
+    if _WIN_FAKE_BROWSER_BYTES is not None:
+        return _WIN_FAKE_BROWSER_BYTES
+    csc = _find_csc()
+    if not csc:
+        raise unittest.SkipTest("Windows .NET csc.exe is unavailable to compile fake_browser stub")
+    with tempfile.TemporaryDirectory(prefix="argon-fake-browser-") as tmp:
+        tmp_dir = Path(tmp)
+        cs = tmp_dir / "FakeBrowser.cs"
+        exe = tmp_dir / "FakeBrowser.exe"
+        cs.write_text(
+            """using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+class FakeBrowser {
+    static string Esc(string s) {
+        if (s == null) return "null";
+        var sb = new StringBuilder("\\"");
+        foreach (char c in s) {
+            if (c == '\\\\') sb.Append("\\\\\\\\");
+            else if (c == '"') sb.Append("\\\\\\"");
+            else if (c == '\\n') sb.Append("\\\\n");
+            else if (c == '\\r') sb.Append("\\\\r");
+            else if (c == '\\t') sb.Append("\\\\t");
+            else sb.Append(c);
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
+    static int Main(string[] args) {
+        string profile = null;
+        bool exitNow = false;
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] == "--profile" && i + 1 < args.Length) profile = args[i + 1];
+            if (args[i] == "--fixture-exit") exitNow = true;
+        }
+        if (profile != null) {
+            Directory.CreateDirectory(profile);
+            string purge = Environment.GetEnvironmentVariable("MOZ_PURGE_CACHES");
+            var sb = new StringBuilder();
+            sb.Append("{\\"pid\\":").Append(Process.GetCurrentProcess().Id);
+            sb.Append(",\\"args\\":[");
+            for (int i = 0; i < args.Length; i++) {
+                if (i > 0) sb.Append(',');
+                sb.Append(Esc(args[i]));
+            }
+            sb.Append("],\\"purge\\":").Append(purge == null ? "null" : Esc(purge)).Append("}\\n");
+            File.AppendAllText(Path.Combine(profile, "launches.jsonl"), sb.ToString(), new UTF8Encoding(false));
+        }
+        if (exitNow) return 0;
+        while (true) Thread.Sleep(50);
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        res = subprocess.run(
+            [csc, "/nologo", "/optimize+", f"/out:{exe}", str(cs)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode != 0 or not exe.is_file():
+            raise RuntimeError(f"Failed to compile Windows fake_browser stub: {res.stdout}\n{res.stderr}")
+        _WIN_FAKE_BROWSER_BYTES = exe.read_bytes()
+        return _WIN_FAKE_BROWSER_BYTES
+
+
+def _is_process_alive(pid):
+    if os.name == "nt":
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, int(pid))
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x102
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def _link_dir_or_junction(link_path, target_path):
+    try:
+        link_path.symlink_to(target_path, target_is_directory=True)
+        return True
+    except OSError:
+        if os.name == "nt":
+            res = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return res.returncode == 0
+        return False
 
 
 class DevBrowserTests(unittest.TestCase):
@@ -33,7 +154,7 @@ class DevBrowserTests(unittest.TestCase):
         shutil.copytree(ROOT / "browser/branding/argon", self.repo / "browser/branding/argon")
         self.base = self.root / "prebuilt app"
         (self.base / "browser").mkdir(parents=True)
-        self.binary = self.base / "argon"
+        self.binary = self.base / ("argon.exe" if os.name == "nt" else "argon")
         self.binary.write_bytes(b"precompiled fixture engine")
         self.binary.chmod(0o755)
         (self.base / "application.ini").write_text("[App]\nName=Argon\nVendor=Argon\nProfile=argon\n")
@@ -64,7 +185,7 @@ class DevBrowserTests(unittest.TestCase):
         runtime = dev.prepare_runtime(self.binary, self.workspace)
         dev.sync_resources(self.repo, self.base, runtime)
         self.assertNotEqual(runtime, self.base)
-        self.assertEqual((runtime / "argon").read_bytes(), self.binary.read_bytes())
+        self.assertEqual((runtime / self.binary.name).read_bytes(), self.binary.read_bytes())
         with zipfile.ZipFile(runtime / "browser/omni.ja") as archive:
             self.assertEqual(archive.read("chrome/browser/content/browser/argon/argon.css"),
                              (self.repo / "browser/themes/shared/argon.css").read_bytes())
@@ -280,6 +401,9 @@ class DevBrowserTests(unittest.TestCase):
         self.assertEqual((profile / "prefs.js").read_text(), "development preferences")
 
     def fake_browser(self):
+        if os.name == "nt":
+            self.binary.write_bytes(_fake_browser_exe_bytes())
+            return
         self.binary.write_text("#!" + sys.executable + "\n" + '''
 import json, os, pathlib, signal, sys, time
 profile = pathlib.Path(sys.argv[sys.argv.index('--profile') + 1])
@@ -292,15 +416,21 @@ if '--fixture-exit' in sys.argv:
 while True:
     time.sleep(0.05)
 ''')
+        self.binary.chmod(0o755)
 
     def start_dev(self, *args):
-        code = ("import importlib.util,sys; from pathlib import Path; "
+        code = ("import importlib.util,signal,sys\nfrom pathlib import Path\n"
+                "def _brk(*_): raise KeyboardInterrupt\n"
+                "if hasattr(signal,'SIGBREAK'): signal.signal(signal.SIGBREAK,_brk)\n"
                 "s=importlib.util.spec_from_file_location('dev',sys.argv[1]); "
                 "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
                 "sys.exit(m.main(sys.argv[3:],repo=Path(sys.argv[2])))")
-        log = (self.root / f"dev-{time.monotonic_ns()}.log").open("w")
+        log = (self.root / f"dev-{time.monotonic_ns()}.log").open("w", encoding="utf-8")
+        popen_kwargs = {"stdout": log, "stderr": log}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         process = subprocess.Popen([sys.executable, "-u", "-c", code, str(SCRIPT), str(self.repo),
-                                    "--binary", str(self.binary), *args], stdout=log, stderr=log)
+                                    "--binary", str(self.binary), *args], **popen_kwargs)
         self.dev_log = Path(log.name)
         log.close()
         self.addCleanup(self.stop_dev, process)
@@ -309,12 +439,21 @@ while True:
     @staticmethod
     def stop_dev(process):
         if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
-            process.wait(timeout=10)
+            if os.name == "nt":
+                try:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                    process.wait(timeout=10)
+                    return
+                except (OSError, subprocess.TimeoutExpired):
+                    process.terminate()
+                    process.wait(timeout=10)
+            else:
+                process.send_signal(signal.SIGTERM)
+                process.wait(timeout=10)
 
     def launches(self):
         path = self.workspace / "profile/launches.jsonl"
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
     def wait_for(self, predicate):
         deadline = time.monotonic() + 10
@@ -352,13 +491,11 @@ while True:
         self.wait_for(lambda: len(self.launches()) == 2)
         second = self.launches()[1]
         self.assertNotEqual(first["pid"], second["pid"])
-        with self.assertRaises(ProcessLookupError):
-            os.kill(first["pid"], 0)
+        self.assertFalse(_is_process_alive(first["pid"]))
         with zipfile.ZipFile(self.workspace / "runtime/browser/omni.ja") as archive:
             self.assertIn(b"--dev-saved: yes", archive.read("chrome/browser/content/browser/argon/argon.css"))
         self.stop_dev(process)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(second["pid"], 0)
+        self.assertFalse(_is_process_alive(second["pid"]))
 
     def test_watch_keeps_its_browser_alive_for_invalid_manifests_and_recovers(self):
         self.fake_browser()
@@ -392,7 +529,7 @@ while True:
                                   "Waiting for a valid save:" in log.read_text())
                     self.assertIsNone(process.poll(), log.read_text())
                     self.assertEqual(self.launches(), current, "An invalid save must not restart the browser")
-                    os.kill(first["pid"], 0)
+                    self.assertTrue(_is_process_alive(first["pid"]))
                     self.assertEqual(archive.read_bytes(), previous)
                     marker = f"--dev-recovered-{name}: yes"
                     css.write_text(css.read_text() + f"\n:root {{ {marker}; }}\n")
@@ -401,8 +538,7 @@ while True:
                     self.assertIsNone(process.poll(), log.read_text())
                     self.assertEqual(len(self.launches()), baseline + 2)
                     self.assertNotEqual(self.launches()[-1]["pid"], first["pid"])
-                    with self.assertRaises(ProcessLookupError):
-                        os.kill(first["pid"], 0)
+                    self.assertFalse(_is_process_alive(first["pid"]))
                     with zipfile.ZipFile(archive) as synchronized:
                         self.assertIn(marker.encode(), synchronized.read("chrome/browser/content/browser/argon/argon.css"))
                 finally:
@@ -421,9 +557,19 @@ while True:
         runtime = dev.prepare_runtime(self.binary, self.workspace)
         original = self.archive.read_bytes()
         shutil.rmtree(runtime / "browser")
-        (runtime / "browser").symlink_to(self.base / "browser", target_is_directory=True)
-        with self.assertRaises(dev.DevError):
-            dev.sync_resources(self.repo, self.base, runtime)
+        linked = _link_dir_or_junction(runtime / "browser", self.base / "browser")
+        if linked:
+            with self.assertRaises(dev.DevError):
+                dev.sync_resources(self.repo, self.base, runtime)
+        else:
+            (runtime / "browser").mkdir(parents=True)
+            with mock.patch.object(
+                dev.platform_compat,
+                "is_symlink_or_junction",
+                side_effect=lambda p: p == runtime / "browser",
+            ):
+                with self.assertRaises(dev.DevError):
+                    dev.sync_resources(self.repo, self.base, runtime)
         self.assertEqual(self.archive.read_bytes(), original)
 
     def test_symlinked_profile_is_rejected_before_launch(self):
@@ -431,9 +577,19 @@ while True:
         self.workspace.mkdir(parents=True)
         personal = self.root / "not-a-development-profile"
         personal.mkdir()
-        (self.workspace / "profile").symlink_to(personal, target_is_directory=True)
-        process = self.start_dev("--no-watch", "--", "--fixture-exit")
-        self.assertEqual(process.wait(timeout=10), 1)
+        linked = _link_dir_or_junction(self.workspace / "profile", personal)
+        if linked:
+            process = self.start_dev("--no-watch", "--", "--fixture-exit")
+            self.assertEqual(process.wait(timeout=10), 1)
+        else:
+            dev = self.subject()
+            with mock.patch.object(
+                dev.platform_compat,
+                "is_symlink_or_junction",
+                side_effect=lambda p: p == self.workspace / "profile",
+            ):
+                with self.assertRaises(dev.DevError):
+                    dev.run_dev(self.repo, self.binary, watch=False, sync_only=False, arguments=("--fixture-exit",))
         self.assertFalse((personal / "launches.jsonl").exists())
 
     def test_reset_profile_removes_existing_profile(self):

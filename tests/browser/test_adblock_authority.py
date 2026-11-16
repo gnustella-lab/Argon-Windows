@@ -12,6 +12,8 @@ from marionette_driver.marionette import Marionette
 from marionette_driver.addons import Addons
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, artifacts_dir, ensure_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -39,9 +41,9 @@ class Authority(unittest.TestCase):
             port = sock.getsockname()[1]
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS'] = '1'
         os.environ['MOZ_AUTOMATION'] = '1'
-        browser = Marionette(bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')),
-                             port=port, headless=True, workspace=str(ROOT / '.cache/browser-tests'),
-                             gecko_log=str(ROOT / 'artifacts/adblock-authority-gecko.log'),
+        browser = Marionette(bin=argon_test_binary(),
+                             port=port, headless=True, workspace=str(workspace_dir()),
+                             gecko_log=str(artifacts_dir() / 'adblock-authority-gecko.log'),
                              prefs={'extensions.update.enabled': False, 'argon.onboarding.completed': True})
         try:
             browser.start_session()
@@ -71,7 +73,7 @@ class Authority(unittest.TestCase):
             # This is an authority-discovery fixture with uBO's id, NOT a uBO
             # parity fixture. Its absence of filtering proves the native service
             # no longer independently cancels/injects when that id is active.
-            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR', str(ROOT / '.cache/scratch'))) as directory:
+            with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR') or str(ensure_dir(ROOT / '.cache/scratch'))) as directory:
                 xpi = Path(directory) / 'authority-fixture.xpi'
                 with zipfile.ZipFile(xpi, 'w') as archive:
                     archive.writestr('manifest.json', json.dumps({

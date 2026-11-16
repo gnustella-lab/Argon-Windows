@@ -140,7 +140,17 @@ class OverlayContractTests(unittest.TestCase):
         self.assertIn("argon-controller.mjs", self.referenced)
 
     def test_every_referenced_resource_is_copied_into_the_tree(self):
-        copied = {Path(entry["to"]).relative_to("browser/base/content/argon").as_posix(): entry for entry in OVERLAY["files"]}
+        for entry in OVERLAY["files"]:
+            dest = Path(entry["to"])
+            self.assertFalse(dest.is_absolute() or ".." in dest.parts,
+                             f"unsafe overlay destination: {entry['to']}")
+            self.assertTrue((ROOT / entry["from"]).is_file(),
+                            f"{entry['from']} is missing from the repository")
+        copied = {
+            Path(entry["to"]).relative_to("browser/base/content/argon").as_posix(): entry
+            for entry in OVERLAY["files"]
+            if Path(entry["to"]).is_relative_to("browser/base/content/argon")
+        }
         for name in self.referenced:
             self.assertIn(name, copied, f"{name} is referenced but never copied by the overlay")
             self.assertTrue(Path(copied[name]["to"]).is_relative_to("browser/base/content/argon"),
@@ -159,7 +169,11 @@ class OverlayContractTests(unittest.TestCase):
 
     def test_relative_module_dependencies_are_copied_and_packaged(self):
         """A window hook is unusable if one of its transitive imports is absent."""
-        copied = {Path(entry["to"]).relative_to("browser/base/content/argon").as_posix(): ROOT / entry["from"] for entry in OVERLAY["files"]}
+        copied = {
+            Path(entry["to"]).relative_to("browser/base/content/argon").as_posix(): ROOT / entry["from"]
+            for entry in OVERLAY["files"]
+            if Path(entry["to"]).is_relative_to("browser/base/content/argon")
+        }
         jar_hook = next(hook for hook in OVERLAY["hooks"] if hook["path"] == "browser/base/jar.mn")
         packaged = {Path(entry["source"]).relative_to("content/argon").as_posix() for entry in jar_hook["entries"]}
         pending = [name for name in self.referenced if name.endswith(".mjs")]
@@ -206,12 +220,15 @@ class OverlayContractTests(unittest.TestCase):
         self.assertIn('pref("privacy.resistFingerprinting", false);', prefs_text)
 
     def test_the_build_configuration_does_not_relax_add_on_signing(self):
-        mozconfig = MOZCONFIG.read_text(encoding="utf-8")
-        active = "\n".join(line for line in mozconfig.splitlines()
-                           if not line.lstrip().startswith("#"))
-        for flag in ("MOZ_REQUIRE_SIGNING", "--with-unsigned-addon-scopes",
-                     "--allow-addon-sideload", "--enable-unverified-updates", "MOZILLA_OFFICIAL"):
-            self.assertNotIn(flag, active, f"{flag} must not be set by the Argon build")
+        for path in (MOZCONFIG, ROOT / "config" / "mozconfig.windows"):
+            if path == ROOT / "config" / "mozconfig.windows" and not path.is_file():
+                continue
+            mozconfig = path.read_text(encoding="utf-8")
+            active = "\n".join(line for line in mozconfig.splitlines()
+                               if not line.lstrip().startswith("#"))
+            for flag in ("MOZ_REQUIRE_SIGNING", "--with-unsigned-addon-scopes",
+                         "--allow-addon-sideload", "--enable-unverified-updates", "MOZILLA_OFFICIAL"):
+                self.assertNotIn(flag, active, f"{flag} must not be set by {path.name}")
 
     def test_identity_hooks_only_touch_the_vendor_and_profile(self):
         hook = next(h for h in OVERLAY["hooks"] if h["path"] == "browser/moz.configure")
@@ -221,6 +238,7 @@ class OverlayContractTests(unittest.TestCase):
             [
                 'imply_option("MOZ_APP_VENDOR", "Argon")',
                 'imply_option("MOZ_APP_PROFILE", "argon")',
+                'imply_option("MOZ_APP_UA_NAME", "Firefox")',
             ],
         )
 

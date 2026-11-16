@@ -16,8 +16,10 @@ from unittest.mock import patch
 from marionette_driver.marionette import Marionette
 from marionette_driver.wait import Wait
 
+from _support import default_argon_binary
+
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BINARY = ROOT / ".cache/argon-dev/runtime/argon"
+DEFAULT_BINARY = default_argon_binary()
 BINARY = os.environ.get("ARGON_TEST_BINARY") or (str(DEFAULT_BINARY) if DEFAULT_BINARY.is_file() else "")
 
 

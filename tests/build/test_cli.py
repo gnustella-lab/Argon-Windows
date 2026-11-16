@@ -47,7 +47,11 @@ class DefaultWorkspaceTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ("ARGON_WORKSPACE", "XDG_CACHE_HOME")}
         with mock.patch.dict(os.environ, env, clear=True):
             path = ff.default_workspace()
-        self.assertEqual(path, Path.home() / ".cache" / "argon-build")
+        expected = Path.home() / ".cache" / "argon-build"
+        if os.name == "nt" and not ff.platform_compat.is_safe_workspace_path(expected, REPO):
+            drive = Path.home().drive or os.environ.get("SystemDrive", "C:")
+            expected = Path(f"{drive}\\argon-build")
+        self.assertEqual(path, expected)
         self.assertNotIn(REPO, [path, *path.parents])
         # The repository lives under a path with spaces; the default must be
         # accepted by the workspace guard regardless.
@@ -55,8 +59,9 @@ class DefaultWorkspaceTests(unittest.TestCase):
 
     def test_argon_workspace_overrides_the_default(self):
         ff = load_tool()
-        with mock.patch.dict(os.environ, {"ARGON_WORKSPACE": "/srv/argon"}):
-            self.assertEqual(ff.default_workspace(), Path("/srv/argon"))
+        override = r"D:\argon-build" if os.name == "nt" else "/srv/argon"
+        with mock.patch.dict(os.environ, {"ARGON_WORKSPACE": override}):
+            self.assertEqual(ff.default_workspace(), Path(override))
 
 
 def load_tool():
@@ -74,10 +79,33 @@ class WorkspaceTests(unittest.TestCase):
             parent = Path(tmp)
             actual = parent / "actual"
             actual.mkdir()
+            root_anchor = Path(Path.home().anchor or "/")
+            unsafe = [Path.home(), root_anchor, REPO, parent / "has spaces",
+                      parent / "$(touch-pwned)", parent / ".." / "outside"]
             link = parent / "link"
-            link.symlink_to(actual, target_is_directory=True)
-            unsafe = [Path.home(), Path("/"), REPO, parent / "has spaces",
-                      parent / "$(touch-pwned)", parent / ".." / "outside", link / "child"]
+            try:
+                link.symlink_to(actual, target_is_directory=True)
+                unsafe.append(link / "child")
+            except OSError:
+                # Unprivileged Windows cannot create symlinks (WinError 1314):
+                # test both an actual NTFS junction and mocked symlink detection.
+                if os.name == "nt":
+                    junction = parent / "junction"
+                    res = subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(junction), str(actual)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if res.returncode == 0:
+                        unsafe.append(junction / "child")
+                with mock.patch.object(
+                    ff.platform_compat,
+                    "is_symlink_or_junction",
+                    side_effect=lambda p: p == link,
+                ):
+                    with self.assertRaises(ff.BuildError):
+                        ff.Workspace(REPO, link / "child").claim()
             for path in unsafe:
                 with self.subTest(path=path), self.assertRaises(ff.BuildError):
                     ff.Workspace(REPO, path).claim()

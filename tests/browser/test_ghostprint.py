@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from marionette_driver.marionette import Marionette
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 class GhostPrint(unittest.TestCase):
     def test_early_hooks_and_controls(self):
@@ -28,7 +30,7 @@ const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getCont
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS']='1'
-        browser=Marionette(bin=os.environ.get('ARGON_TEST_BINARY',str(ROOT/'.cache/argon-dev/runtime/argon')),port=port,headless=True,workspace=str(ROOT/'.cache/browser-tests'),gecko_log=str(ROOT/'artifacts/ghostprint-gecko.log'),prefs={'argon.onboarding.completed':True,'privacy.resistFingerprinting':False,'privacy.resistFingerprinting.pbmode':False,'browser.privatebrowsing.autostart':False,'privacy.fingerprintingProtection':False,'privacy.fingerprintingProtection.pbmode':False})
+        browser=Marionette(bin=argon_test_binary(),port=port,headless=True,workspace=str(workspace_dir()),gecko_log=str(artifacts_dir()/'ghostprint-gecko.log'),prefs={'argon.onboarding.completed':True,'privacy.resistFingerprinting':False,'privacy.resistFingerprinting.pbmode':False,'browser.privatebrowsing.autostart':False,'privacy.fingerprintingProtection':False,'privacy.fingerprintingProtection.pbmode':False})
         try:
             browser.start_session(); browser.set_window_rect(width=1200,height=740); browser.set_context('chrome')
             available=browser.execute_async_script('''const done=arguments[arguments.length-1]; const {ArgonGhostPrint:g}=ChromeUtils.importESModule('chrome://browser/content/argon/adblock/ghostprint.sys.mjs'); g.ready.then(()=>done(true),e=>done(String(e)));''',sandbox=None)

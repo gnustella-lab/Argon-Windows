@@ -1,6 +1,7 @@
 """Tests for Argon's Flatpak manifest, metadata, and bundle builder."""
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import tarfile
@@ -368,7 +369,8 @@ class FlatpakPackagingContractTests(unittest.TestCase):
 
             dist_bin = ws.obj / "dist" / "bin"
             (dist_bin / "browser").mkdir(parents=True)
-            argon_bin = dist_bin / "argon"
+            bin_name = "argon.exe" if os.name == "nt" else "argon"
+            argon_bin = dist_bin / bin_name
             argon_bin.write_text("#!/bin/sh\necho Argon 162.0a1\n", encoding="utf-8")
             argon_bin.chmod(0o755)
             (dist_bin / "application.ini").write_text(
@@ -381,8 +383,8 @@ class FlatpakPackagingContractTests(unittest.TestCase):
             report = self.tool.command_stage_runtime(ws, output=staged_out)
             self.assertTrue(report["succeeded"])
             self.assertEqual(report["runtime"], str(staged_out.resolve()))
-            self.assertEqual(report["binary"], str((staged_out / "argon").resolve()))
-            self.assertTrue((staged_out / "argon").is_file())
+            self.assertEqual(report["binary"], str((staged_out / bin_name).resolve()))
+            self.assertTrue((staged_out / bin_name).is_file())
             self.assertTrue((staged_out / "browser" / "omni.ja").is_file())
             self.assertEqual(
                 (staged_out / "librewolf.cfg").read_text(encoding="utf-8"),

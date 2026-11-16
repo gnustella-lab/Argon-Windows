@@ -1,8 +1,8 @@
 # Argon Browser
 
-Argon is an open-source desktop web browser for Linux built on LibreWolf and Mozilla's Gecko engine. It includes vertical tabs, container-isolated workspaces, built-in content and fingerprint blocking, and a compatibility bridge for Chromium extensions.
+Argon is an open-source desktop web browser for Linux and Windows (`x64`) built on LibreWolf and Mozilla's Gecko engine. It includes vertical tabs, container-isolated workspaces, built-in content and fingerprint blocking, and a compatibility bridge for Chromium extensions.
 
-It runs as a separate application with its own binary (`argon`), profile directory, and Flatpak package (`io.github.argon_browser.Argon`). Existing Firefox or LibreWolf profiles stay untouched, with no shared cookies, history, or active sessions.
+It runs as a separate application with its own binary (`argon` / `argon.exe`), profile directory, Flatpak package (`io.github.argon_browser.Argon`), and Windows portable ZIP / NSIS installer packages. Existing Firefox or LibreWolf profiles stay untouched, with no shared cookies, history, or active sessions.
 
 ![Argon Browser with vertical tabs in dark mode](docs/assets/dark-vertical.png)
 
@@ -114,8 +114,10 @@ The repository includes scripts for local development, synchronization, testing,
 | `npm run test:dev` | Test the development server watcher and synchronization mechanisms |
 | `npm run test:adblock` | Test adblock-rust filtering, cosmetic injection, and native ABI wrappers |
 | `npm run test:ghostprint` | Run GhostPrint verification tests and surface perturbation checks |
-| `npm run test:python` | Run Python tests for build automation, Flatpak packaging, and overlay validation |
+| `npm run test:python` | Run Python tests for build automation, branding contracts, and overlay validation |
+| `node scripts/run-python.mjs -m unittest discover -s tests/windows -v` | Run Windows compatibility, branding, portable isolation, and installer contract tests |
 | `npm run verify:flatpak` | Validate Flatpak metadata and verify an installed `.flatpak` bundle in an isolated user store |
+| `npm run verify:windows` | Verify Windows portable ZIP, NSIS installer, `SHA256SUMS`, and portable isolation |
 | `npm run test:browser` | Execute end-to-end browser smoke tests in an isolated runtime |
 
 ## Extension compatibility analyzer
@@ -150,29 +152,40 @@ python3 scripts/argon.py flatpak --runtime .cache/argon-dev/runtime --output .ca
 python3 scripts/argon.py verify-flatpak --require-full-omni --bundle .cache/dist/argon-0.1.0.en-US.linux-x86_64.flatpak
 ```
 
+### Windows (10 / 11 x64)
+
+Argon ships Windows `x64` builds as a self-contained portable ZIP (`argon-<ver>.en-US.win64-portable.zip`) and an NSIS installer (`argon-<ver>.en-US.win64.installer.exe`), verified against `SHA256SUMS`:
+
+- **Portable ZIP**: Extract and launch `argon-portable.exe`. All profile data, caches, and remoting state stay inside `<portable_dir>\data\` without touching `%APPDATA%\argon`, Firefox, or LibreWolf.
+- **NSIS Installer**: Supports per-user (`%LOCALAPPDATA%\Programs\Argon`) or elevated per-machine (`C:\Program Files\Argon`) installs, registers Windows *Default apps* capabilities without hijacking defaults, and preserves user profiles on upgrade and uninstall.
+
+See [docs/windows.md](docs/windows.md) for full Windows installation, SmartScreen/signing notes, and clean-machine build instructions.
+
 ## Building from source
 
-Argon builds on Linux x86_64 using Mozilla's `mach` toolchain, applying LibreWolf privacy patches and the Argon overlay onto a pinned source tree.
+Argon builds on **Linux `x86_64`** and **Windows 10/11 `x64`** using Mozilla's `mach` toolchain, applying LibreWolf privacy patches and the Argon overlay onto a pinned source tree. See [docs/building.md](docs/building.md) and [docs/windows.md](docs/windows.md) for platform-specific setup.
 
 ### System requirements
 
-- Linux x86_64
-- Python 3.10 or newer
+- Linux `x86_64` or Windows 10/11 `x64` (Windows builds additionally require MozillaBuild >= 4.0 and Visual Studio 2022+ with MSVC ATL/MFC + Windows 10 SDK)
+- Python 3.10 or newer (on Windows, `node scripts/run-python.mjs` skips 0-byte Microsoft Store `WindowsApps` aliases automatically)
 - Node.js 22 or newer
 - Git
-- Rust and Cargo (with `wasm32-unknown-unknown` target for rebuilding adblock artifacts)
-- Minimum 8 GB RAM and 40 GB free disk space
+- Rust and Cargo (installed by `npm run bootstrap`; add `wasm32-unknown-unknown` only if rebuilding `native/adblock` artifacts)
+- Minimum 8 GB RAM (16 GB+ recommended on Windows) and 40–65 GB free disk space
 
 ### Build steps
 
 ```bash
-npm run doctor      # Check toolchain, memory, disk space, and application identity
-npm run fetch       # Download and verify the pinned upstream source archive
-npm run apply       # Apply LibreWolf patches and the Argon overlay
-npm run bootstrap   # Install required toolchains via mach
-npm run build       # Compile dist/bin/argon
-npm start           # Launch the built browser with a development profile
-npm run flatpak     # Package the distributable Flatpak bundle
+npm run doctor        # Check toolchain, memory, disk space, and application identity
+npm run fetch         # Download and verify the pinned upstream source archive
+npm run apply         # Apply LibreWolf patches and the Argon overlay
+npm run bootstrap     # Install required toolchains via mach
+npm run build         # Compile dist/bin/argon (or dist/bin/argon.exe on Windows)
+npm start             # Launch the built browser with a development profile
+npm run flatpak       # Package the distributable Flatpak bundle (Linux)
+npm run win:portable  # Package the Windows portable ZIP + SHA256SUMS (Windows)
+npm run win:installer # Package the Windows NSIS installer + SHA256SUMS (Windows, requires makensis)
 ```
 
 To rebuild the native filter engine and vendored cosmetic interpreter:
@@ -192,8 +205,8 @@ npm run update:adblock
 - `config/`: Upstream source configuration, mozconfig definitions, and overlay maps.
 - `docs/`: Technical documentation and asset files.
 - `l10n/`: Locale definitions and translation files for 45 languages.
-- `packaging/`: Flatpak manifests, desktop entry files, and appstream metadata.
-- `patches/`: Privacy and Linux integration patches from LibreWolf.
+- `packaging/`: Flatpak manifests, desktop entry files, appstream metadata, and Windows portable launcher & NSIS installer scripts.
+- `patches/`: Privacy, security, and platform integration patches from LibreWolf.
 - `scripts/`: Development utilities, build automation, and test runners.
 - `tests/`: Automated unit, integration, and browser smoke tests.
 - `website/`: Landing page source and interactive extension analyzer.

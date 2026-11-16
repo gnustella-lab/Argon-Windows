@@ -8,6 +8,7 @@ file's syntax, and drift in an upstream hook fails closed.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -38,13 +39,13 @@ class ApplyTests(unittest.TestCase):
         overlay = json.loads((support.REPO / "config/overlay.json").read_text())
         hook = next(h for h in overlay["hooks"] if h["path"] == support.NEWTAB_PREFERENCES)
         target = self.source / support.NEWTAB_PREFERENCES
-        previous = target.read_text()
+        previous = target.read_text(encoding="utf-8")
         for replacement in hook["previous_replacements"]:
             previous = previous.replace(replacement["old"], replacement["new"], 1)
-        target.write_text(previous)
+        target.write_text(previous, encoding="utf-8", newline="\n")
         self.apply()
-        self.assertNotIn('subcategory: "support-firefox"', target.read_text())
-        target.write_text(previous + "\n// unexpected upstream drift\n")
+        self.assertNotIn('subcategory: "support-firefox"', target.read_text(encoding="utf-8"))
+        target.write_text(previous + "\n// unexpected upstream drift\n", encoding="utf-8", newline="\n")
         result = support.run_cli(["apply"], workspace=self.workspace)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("drift", result.stderr)
@@ -56,6 +57,7 @@ class ApplyTests(unittest.TestCase):
             self.assertTrue(target.is_file(), f"missing {name}")
         self.assertTrue((self.source / "browser/branding/argon/moz.build").is_file())
         self.assertTrue((self.source / "browser/base/content/argon-window-hooks.inc.xhtml").is_file())
+        self.assertTrue((self.source / "browser/app/argon.exe.manifest").is_file())
 
     def test_jar_hook_inserts_entries_before_the_anchor(self):
         self.apply()
@@ -135,6 +137,7 @@ class ApplyTests(unittest.TestCase):
         text = (self.source / "browser/moz.configure").read_text()
         self.assertIn('imply_option("MOZ_APP_VENDOR", "Argon")', text)
         self.assertIn('imply_option("MOZ_APP_PROFILE", "argon")', text)
+        self.assertIn('imply_option("MOZ_APP_UA_NAME", "Firefox")', text)
         self.assertNotIn('\nimply_option("MOZ_APP_VENDOR", "Mozilla")', text,
                          "two implied vendors would make configure fail")
         self.assertIn('# upstream: imply_option("MOZ_APP_VENDOR", "Mozilla")', text)
@@ -213,7 +216,10 @@ class ApplyTests(unittest.TestCase):
         self.assertNotIn("MOZILLA_OFFICIAL", joined.replace("MOZILLA_OFFICIAL is not set", ""))
         self.assertNotRegex(joined, r"(?m)^export MOZ_APP_(VENDOR|PROFILE)",
                             "project_flag options have possible_origins=('implied',) and are set by the overlay")
-        self.assertIn(f"MOZ_OBJDIR={self.workspace / 'obj'}", joined)
+        expected_obj = (self.workspace / "obj").as_posix() if os.name == "nt" else str(self.workspace / "obj")
+        self.assertIn(f"MOZ_OBJDIR={expected_obj}", joined)
+        if os.name == "nt":
+            self.assertIn("--disable-default-browser-agent", joined)
 
     def test_artifact_mozconfig_is_front_end_only_and_pins_the_revision(self):
         joined, lock = self.mozconfig(artifact=True)
@@ -247,7 +253,8 @@ class ApplyTests(unittest.TestCase):
         result = support.run_cli(["run", "--dry-run"], workspace=self.workspace)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("build", result.stderr.lower())
-        binary = self.workspace / "obj/dist/bin/argon"
+        argon_name = "argon.exe" if os.name == "nt" else "argon"
+        binary = self.workspace / "obj/dist/bin" / argon_name
         binary.parent.mkdir(parents=True)
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
@@ -259,7 +266,8 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("--no-remote", report["command"])
 
     def test_package_refuses_an_artifact_build(self):
-        binary = self.workspace / "obj/dist/bin/firefox"
+        firefox_name = "firefox.exe" if os.name == "nt" else "firefox"
+        binary = self.workspace / "obj/dist/bin" / firefox_name
         binary.parent.mkdir(parents=True)
         binary.write_text("")
         result = support.run_cli(["package"], workspace=self.workspace)

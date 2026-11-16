@@ -79,3 +79,42 @@ jobs:
           name: chrome-smoke-artifacts
           path: artifacts/chrome-smoke/
           if-no-files-found: ignore
+
+  unit-windows:
+    name: Windows unit, contract, and packaging-script tests
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run Node unit tests
+        run: npm test
+
+      - name: Verify adblock parity gates
+        run: node scripts/adblock-policy.mjs verify --evidence docs/parity-evidence.json
+
+      - name: Run Python build, branding, dev watcher, and Windows contract tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm run test:python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:dev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs -m unittest discover -s tests/windows -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs tests/adblock/test_native.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-python.mjs tests/adblock/test_snapshot.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify cross-platform toolchain doctor
+        run: npm run doctor

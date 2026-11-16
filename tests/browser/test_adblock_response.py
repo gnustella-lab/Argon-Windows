@@ -21,6 +21,8 @@ import unittest
 from marionette_driver.marionette import Marionette
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 BASE_MODULE = 'chrome://browser/content/argon/adblock/'
 
@@ -189,9 +191,9 @@ class AdblockResponseTransport(unittest.TestCase):
         # automation. Otherwise real uBO can activate asynchronously and the
         # correct authority gate suspends native filtering mid-test.
         os.environ['MOZ_AUTOMATION'] = '1'
-        cls.browser = Marionette(bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')),
-            port=port, headless=True, workspace=str(ROOT / '.cache/browser-tests'),
-            gecko_log=str(ROOT / 'artifacts/adblock-response-gecko.log'),
+        cls.browser = Marionette(bin=argon_test_binary(),
+            port=port, headless=True, workspace=str(workspace_dir()),
+            gecko_log=str(artifacts_dir() / 'adblock-response-gecko.log'),
             prefs={'extensions.update.enabled': False, 'extensions.update.autoUpdateDefault': False,
                    'argon.onboarding.completed': True})
         try:

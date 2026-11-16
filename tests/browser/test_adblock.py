@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from marionette_driver.marionette import Marionette
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 
 class NativeAdblock(unittest.TestCase):
@@ -31,9 +33,9 @@ class NativeAdblock(unittest.TestCase):
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS'] = '1'
-        browser = Marionette(bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')), port=port,
-            headless=True, workspace=str(ROOT / '.cache/browser-tests'),
-            gecko_log=str(ROOT / 'artifacts/adblock-gecko.log'),
+        browser = Marionette(bin=argon_test_binary(), port=port,
+            headless=True, workspace=str(workspace_dir()),
+            gecko_log=str(artifacts_dir() / 'adblock-gecko.log'),
             prefs={'intl.locale.requested': 'pt-BR', 'extensions.update.enabled': False, 'extensions.update.autoUpdateDefault': False,
                    'argon.onboarding.completed': True})
         try:

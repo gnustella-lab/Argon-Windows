@@ -13,6 +13,8 @@ from marionette_driver.marionette import Marionette
 from marionette_driver.wait import Wait
 from marionette_driver.by import By
 
+from _support import argon_test_binary, artifacts_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 
 PAGE = """window.__early = {
@@ -144,11 +146,10 @@ class Scriptlets(unittest.TestCase):
         # automation. Production authority/security preferences are unchanged;
         # the separate authority fixture exercises real addon arbitration.
         os.environ['MOZ_AUTOMATION'] = '1'
-        (ROOT / 'artifacts').mkdir(exist_ok=True)
         self.browser = Marionette(
-            bin=os.environ.get('ARGON_TEST_BINARY', str(ROOT / '.cache/argon-dev/runtime/argon')),
-            port=port, headless=True, workspace=str(ROOT / '.cache/browser-tests'),
-            gecko_log=str(ROOT / f'artifacts/scriptlets-{self._testMethodName}-gecko.log'),
+            bin=argon_test_binary(),
+            port=port, headless=True, workspace=str(workspace_dir()),
+            gecko_log=str(artifacts_dir() / f'scriptlets-{self._testMethodName}-gecko.log'),
             prefs={'extensions.update.enabled': False, 'argon.onboarding.completed': True})
         self.addCleanup(self.browser.cleanup)
         self.browser.start_session()

@@ -19,6 +19,8 @@ from unittest.mock import patch
 from marionette_driver.marionette import Marionette
 from marionette_driver.wait import Wait
 
+from _support import argon_test_binary, ensure_dir, workspace_dir
+
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = Path(os.environ.get("ARGON_TEST_ARTIFACTS", ROOT / "artifacts/chrome-smoke"))
 
@@ -26,15 +28,17 @@ ARTIFACTS = Path(os.environ.get("ARGON_TEST_ARTIFACTS", ROOT / "artifacts/chrome
 class ChromeSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ARTIFACTS.mkdir(parents=True, exist_ok=True)
-        workspace = ROOT / ".cache" / "browser-tests"
-        workspace.mkdir(parents=True, exist_ok=True)
+        ensure_dir(ARTIFACTS)
+        workspace = workspace_dir()
         cls.resources = Path(tempfile.mkdtemp(prefix="argon-resources-", dir=workspace))
         # Match the shipping manifest, not a hand-maintained superset that
         # could accidentally supply a dependency missing from the real build.
         overlay = json.loads((ROOT / "config/overlay.json").read_text())
         for entry in overlay["files"]:
-            target = cls.resources / Path(entry["to"]).relative_to("browser/base/content/argon")
+            dest_rel = Path(entry["to"])
+            if not dest_rel.is_relative_to("browser/base/content/argon"):
+                continue
+            target = cls.resources / dest_rel.relative_to("browser/base/content/argon")
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / entry["from"], target)
         with socket.socket() as sock:
@@ -42,7 +46,7 @@ class ChromeSmoke(unittest.TestCase):
             port = sock.getsockname()[1]
         with patch.dict(os.environ, {"MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"}):
             cls.browser = Marionette(
-                bin=os.environ.get("ARGON_TEST_BINARY", "/usr/lib/firefox/firefox"),
+                bin=argon_test_binary(fallback_to_firefox=True),
                 port=port,
                 workspace=str(workspace),
                 headless=True,
