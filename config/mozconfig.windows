@@ -66,4 +66,7 @@ ac_add_options --enable-optimize
 ac_add_options --enable-release
 ac_add_options --enable-rust-simd
 ac_add_options --disable-debug
+# Omit C++/Rust CodeView/PDB debug symbols (crashreporter is already disabled)
+# so clang-cl (-Z7) and rustc/LTO (-C debuginfo=2) fit cleanly on 16 GB hosts.
+ac_add_options --disable-debug-symbols
 ac_add_options --disable-tests

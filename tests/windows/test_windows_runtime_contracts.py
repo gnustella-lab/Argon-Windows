@@ -106,6 +106,7 @@ class WindowsRuntimeContractTests(unittest.TestCase):
             "--disable-notification-server",
             "--disable-push-notification-helper",
             "--disable-backgroundtasks",
+            "--disable-debug-symbols",
         ):
             self.assertIn(required, active)
         self.assertNotIn("--with-redist", active, "bare --with-redist breaks builds without Redist/MSVC")
