@@ -129,12 +129,12 @@ and git artifact builds need a **git-cinnabar** clone. The GitHub tarball that
 
 | Target | Change |
 | :-- | :-- |
-| `browser/base/content/argon/` | `config/overlay.json` (203 files across core UI, appearance, workspaces, shortcuts, onboarding, settings, MV3 bridge, uBlock adblock, GhostPrint, bundled lists, and 45 locales) |
-| `browser/base/jar.mn` | `content/browser/argon/*` entries matching every overlay file (checked by `tests/build/test_overlay.py`) |
+| `browser/base/content/argon/`, `browser/app/argon.exe.manifest` | `config/overlay.json` (204 files: 203 across core UI, appearance, workspaces, shortcuts, onboarding, settings, MV3 bridge, uBlock adblock, GhostPrint, bundled lists, and 45 locales, plus `browser/app/argon.exe.manifest`) |
+| `browser/base/jar.mn` | `content/browser/argon/*` entries matching every overlay file (checked by `tests/build/test_overlay_contract.py`) |
 | `browser/base/content/browser.xhtml` | `#include argon-window-hooks.inc.xhtml` after `browser-main.js` |
 | `browser/app/profile/firefox.js` | `argon.*` defaults; Mozilla studies, Normandy, and data submission off by default; New Tab widgets and recommended stories off by default; sponsored shortcut services and their New Tab switch off |
 | `browser/extensions/newtab/lib/AboutPreferences.sys.mjs` | Sponsored shortcuts setting hidden and removed from the New Tab settings pane; the "Support Firefox" toggle no longer writes it |
-| `browser/moz.configure` | `MOZ_APP_VENDOR` (`Argon`) and `MOZ_APP_PROFILE` (`argon`) implied |
+| `browser/moz.configure` | `MOZ_APP_VENDOR` (`Argon`), `MOZ_APP_PROFILE` (`argon`), and `MOZ_APP_UA_NAME` (`Firefox`) implied |
 | `browser/branding/argon/` | branding package added |
 | `settings/`, `packaging/flatpak/` | canonical `policies.json`, `librewolf.cfg`, `local-settings.js`, desktop entry, AppStream metainfo, and Flatpak bundle packaging |
 

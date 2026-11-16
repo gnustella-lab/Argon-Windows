@@ -161,6 +161,7 @@ Get-FileHash .\argon-0.1.3.en-US.win64.installer.exe -Algorithm SHA256
 ```powershell
 node scripts/run-python.mjs -m venv .cache\browser-venv
 .cache\browser-venv\Scripts\python.exe -m pip install -r tests\browser\requirements.txt
+npm run stage:runtime -- --output C:\argon-build\obj\dist\argon-runtime
 $env:ARGON_TEST_BINARY = "C:\argon-build\obj\dist\argon-runtime\argon.exe"
 npm run test:browser
 ```
