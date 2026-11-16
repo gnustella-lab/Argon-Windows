@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Argon branding preferences.
 //
-// Argon is distributed exclusively via Flatpak with --disable-updater, so no
-// built-in update server endpoints or intervals are configured here.
+// Argon is distributed with --disable-updater, so no built-in update server
+// endpoints or intervals are configured here.
 // Extension signing and the paste-protection counter are upstream security
 // behaviour and must not be relaxed for branding.
 

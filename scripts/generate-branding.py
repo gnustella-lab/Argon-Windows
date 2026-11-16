@@ -20,11 +20,15 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
+import io
+import os
 import pathlib
+import struct
 import sys
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
 except ModuleNotFoundError:  # pragma: no cover - documents the requirement
     sys.exit("Pillow is required to regenerate assets: pip install Pillow")
 
@@ -125,18 +129,32 @@ def draw_mark(
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    win_fonts = pathlib.Path(os.environ.get("WINDIR") or r"C:\Windows") / "Fonts"
     candidates = [
+        # Linux
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         if bold
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
         if bold
         else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        # Windows
+        str(win_fonts / ("segoeuib.ttf" if bold else "segoeui.ttf")),
+        str(win_fonts / ("arialbd.ttf" if bold else "arial.ttf")),
+        str(win_fonts / ("calibrib.ttf" if bold else "calibri.ttf")),
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+        if bold
+        else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
     ]
     for candidate in candidates:
         if pathlib.Path(candidate).is_file():
             return ImageFont.truetype(candidate, size)
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def draw_brand_sheet() -> Image.Image:
@@ -260,7 +278,271 @@ def write_png(image: Image.Image, path: pathlib.Path) -> None:
     image.save(path, format="PNG", optimize=True)
 
 
-def main() -> int:
+def write_bmp(image: Image.Image, path: pathlib.Path, background: str = DARK_CHROME) -> None:
+    """Write an uncompressed 24-bit RGB Windows BMP (NSIS-compatible)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if image.mode != "RGB":
+        canvas = Image.new("RGBA", image.size, background)
+        if image.mode == "RGBA":
+            canvas.alpha_composite(image)
+        else:
+            canvas.paste(image.convert("RGBA"))
+        rgb = canvas.convert("RGB")
+    else:
+        rgb = image
+    rgb.save(path, format="BMP")
+
+
+def _encode_ico_dib_32(image: Image.Image) -> bytes:
+    """Encode an RGBA image as a 32-bit BGRA DIB + 1-bit AND mask for Windows ICO."""
+    rgba = image.convert("RGBA")
+    w, h = rgba.size
+    pixels = rgba.tobytes("raw", "BGRA")
+    # ICO DIBs store rows bottom-up, with biHeight = 2 * h (XOR + AND mask).
+    xor_rows = b"".join(
+        pixels[y * w * 4 : (y + 1) * w * 4] for y in range(h - 1, -1, -1)
+    )
+    and_stride = ((w + 31) // 32) * 4
+    and_rows = bytearray()
+    alpha_bytes = rgba.getchannel("A").tobytes()
+    for y in range(h - 1, -1, -1):
+        row = bytearray(and_stride)
+        row_off = y * w
+        for x in range(w):
+            if alpha_bytes[row_off + x] == 0:
+                row[x >> 3] |= 0x80 >> (x & 7)
+        and_rows.extend(row)
+
+    header = struct.pack(
+        "<IIIHHIIIIII",
+        40,          # biSize
+        w,           # biWidth
+        h * 2,       # biHeight (XOR + AND)
+        1,           # biPlanes
+        32,          # biBitCount
+        0,           # biCompression (BI_RGB)
+        len(xor_rows),
+        0,
+        0,
+        0,
+        0,
+    )
+    return header + xor_rows + bytes(and_rows)
+
+
+def _encode_ico_png(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.convert("RGBA").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def write_ico(frames: list[Image.Image], path: pathlib.Path) -> None:
+    """Write a multi-size Windows ICO using 32-bit DIBs (<256 px) and PNG (256 px)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(frames, key=lambda im: im.width)
+    payloads: list[tuple[int, int, bytes]] = []
+    for im in ordered:
+        w, h = im.size
+        if w != h or w < 1 or w > 256:
+            raise ValueError(f"Unsupported ICO frame size: {w}x{h}")
+        raw = _encode_ico_png(im) if w == 256 else _encode_ico_dib_32(im)
+        payloads.append((w, h, raw))
+
+    count = len(payloads)
+    header = struct.pack("<HHH", 0, 1, count)
+    offset = 6 + count * 16
+    directory = bytearray()
+    for w, h, raw in payloads:
+        directory.extend(
+            struct.pack(
+                "<BBBBHHII",
+                0 if w == 256 else w,
+                0 if h == 256 else h,
+                0,
+                0,
+                1,
+                32,
+                len(raw),
+                offset,
+            )
+        )
+        offset += len(raw)
+
+    with open(path, "wb") as handle:
+        handle.write(header)
+        handle.write(directory)
+        for _, _, raw in payloads:
+            handle.write(raw)
+
+
+def draw_document_icon(size: int, badge: str | None = None) -> Image.Image:
+    """Render an Argon document (or PDF) icon at `size` px from supersampled geometry."""
+    ss = size * SUPERSAMPLE
+    img = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    s = ss / 32.0
+
+    # Paper body matching browser/branding/argon/content/branding/document_pdf.svg
+    paper = [(6 * s, 4 * s), (19 * s, 4 * s), (24 * s, 9 * s), (24 * s, 28 * s), (6 * s, 28 * s)]
+    stroke_w = max(2, round(1.6 * s))
+    draw.polygon(paper, fill=IVORY)
+    draw.line([*paper, paper[0]], fill=OBSIDIAN, width=stroke_w, joint="curve")
+    # Folded corner crease
+    draw.line([(19 * s, 4 * s), (19 * s, 9 * s), (24 * s, 9 * s)], fill=OBSIDIAN, width=stroke_w)
+
+    # Centered Argon glyph inside the sheet
+    glyph_sz = max(8, round(12.8 * s))
+    glyph = draw_mark(glyph_sz, background=None, glyph=OBSIDIAN)
+    gx = round(9.0 * s)
+    gy = round((10.0 if badge else 11.5) * s)
+    img.alpha_composite(glyph, (gx, gy))
+
+    if badge:
+        bar_y0 = round(21.0 * s)
+        bar_y1 = round(27.0 * s)
+        draw.rectangle((round(7.5 * s), bar_y0, round(22.5 * s), bar_y1), fill=ACCENT)
+        if size >= 32:
+            font = _load_font(max(8, round(4.5 * s)), bold=True)
+            bbox = draw.textbbox((0, 0), badge, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            tx = round(15.0 * s - tw / 2.0) - bbox[0]
+            ty = round((bar_y0 + bar_y1) / 2.0 - th / 2.0) - bbox[1]
+            draw.text((tx, ty), badge, fill=IVORY, font=font)
+
+    return img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def draw_newwindow_icon(size: int) -> Image.Image:
+    """Render a browser window icon carrying the Argon accent titlebar."""
+    ss = size * SUPERSAMPLE
+    img = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    s = ss / 32.0
+    pad = round(2.5 * s)
+    radius = max(2, round(3.5 * s))
+    stroke = max(2, round(1.8 * s))
+    draw.rounded_rectangle(
+        (pad, round(4 * s), ss - pad - 1, round(28 * s)),
+        radius=radius,
+        fill=IVORY,
+        outline=OBSIDIAN,
+        width=stroke,
+    )
+    draw.rounded_rectangle(
+        (pad, round(4 * s), ss - pad - 1, round(10.5 * s)),
+        radius=radius,
+        fill=OBSIDIAN,
+    )
+    draw.rectangle((pad, round(8 * s), ss - pad - 1, round(11 * s)), fill=OBSIDIAN)
+    # Accent window dot
+    r = max(2, round(1.2 * s))
+    cx, cy = round(6.5 * s), round(7.5 * s)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=ACCENT)
+    glyph_sz = max(8, round(12.0 * s))
+    img.alpha_composite(draw_mark(glyph_sz, background=None, glyph=OBSIDIAN), (round(10 * s), round(13 * s)))
+    return img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def draw_newtab_icon(size: int) -> Image.Image:
+    """Render a crisp '+' new-tab icon inside an Argon rounded tile."""
+    ss = size * SUPERSAMPLE
+    img = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    radius = round(CORNER_RADIUS * (ss / GRID))
+    draw.rounded_rectangle((0, 0, ss - 1, ss - 1), radius=radius, fill=OBSIDIAN)
+    cx = ss // 2
+    arm = round(ss * 0.24)
+    half_t = max(2, round(ss * 0.065))
+    draw.rectangle((cx - half_t, cx - arm, cx + half_t, cx + arm), fill=IVORY)
+    draw.rectangle((cx - arm, cx - half_t, cx + arm, cx + half_t), fill=IVORY)
+    return img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def draw_tile_png(size: int, mark_size: int, background: str | None, glyph: str) -> Image.Image:
+    """Render a centered Windows Start tile PNG on a transparent canvas."""
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    mark = draw_mark(mark_size, background=background, glyph=glyph)
+    offset = ((size - mark_size) // 2, (size - mark_size) // 2)
+    canvas.alpha_composite(mark, offset)
+    return canvas
+
+
+def draw_nsis_header(rtl: bool = False) -> Image.Image:
+    """Render the 150x57 NSIS wizard header bitmap."""
+    w, h = 150, 57
+    img = Image.new("RGBA", (w, h), DARK_CHROME)
+    draw = ImageDraw.Draw(img)
+    draw.line([(0, h - 1), (w - 1, h - 1)], fill="#2F333C", width=1)
+    mark = draw_mark(38, OBSIDIAN, IVORY)
+    mx = 12 if rtl else (w - 38 - 12)
+    my = (h - 38) // 2
+    img.alpha_composite(mark, (mx, my))
+    return img
+
+
+def draw_nsis_watermark() -> Image.Image:
+    """Render the 164x314 NSIS welcome/finish sidebar watermark bitmap."""
+    w, h = 164, 314
+    img = Image.new("RGBA", (w, h), DARK_CHROME)
+    draw = ImageDraw.Draw(img)
+    # Subtle top accent stripe and right separator
+    draw.rectangle((0, 0, w - 1, 4), fill=ACCENT)
+    draw.line([(w - 1, 0), (w - 1, h - 1)], fill="#2F333C", width=1)
+    # Framed primary Argon mark
+    draw.rounded_rectangle((22, 34, w - 23, 154), radius=14, fill="#23262D", outline="#2F333C", width=1)
+    mark = draw_mark(84, OBSIDIAN, IVORY)
+    img.alpha_composite(mark, ((w - 84) // 2, 52))
+    # Wordmark + subtitle
+    f_word = _load_font(22, bold=True)
+    f_tag = _load_font(11, bold=False)
+    wb = draw.textbbox((0, 0), "Argon", font=f_word)
+    draw.text(((w - (wb[2] - wb[0])) // 2 - wb[0], 176), "Argon", fill=IVORY, font=f_word)
+    tb = draw.textbbox((0, 0), "Private Web Browser", font=f_tag)
+    draw.text(((w - (tb[2] - tb[0])) // 2 - tb[0], 208), "Private Web Browser", fill="#A6ADBD", font=f_tag)
+    return img
+
+
+def generate_windows_assets() -> None:
+    """Generate Windows ICO, NSIS BMP, and Start-tile VisualElements assets."""
+    # Windows multi-size .ico icons required by browser/app/moz.build & splash.rc.
+    write_ico([draw_mark(sz) for sz in (16, 32, 48, 256)], BRANDING / "firefox.ico")
+    write_ico([draw_mark(sz) for sz in (16, 32, 48, 64)], BRANDING / "firefox64.ico")
+    write_ico([draw_document_icon(sz) for sz in (16, 32, 48, 256)], BRANDING / "document.ico")
+    write_ico([draw_document_icon(sz, badge="PDF") for sz in (16, 32, 48, 256)], BRANDING / "document_pdf.ico")
+    write_ico([draw_newwindow_icon(sz) for sz in (16, 32, 48)], BRANDING / "newwindow.ico")
+    write_ico([draw_newtab_icon(sz) for sz in (16, 32, 48)], BRANDING / "newtab.ico")
+    write_ico(
+        [draw_mark(sz, background=DARK_CHROME, glyph=ACCENT) for sz in (16, 32, 48, 256)],
+        BRANDING / "pbmode.ico",
+    )
+
+    # Windows NSIS wizard bitmaps required by python/mozbuild/mozbuild/nsis.py.
+    write_bmp(draw_nsis_header(rtl=False), BRANDING / "wizHeader.bmp")
+    write_bmp(draw_nsis_header(rtl=True), BRANDING / "wizHeaderRTL.bmp")
+    write_bmp(draw_nsis_watermark(), BRANDING / "wizWatermark.bmp")
+
+    # Windows Start tile VisualElements PNGs required by branding-common.mozbuild.
+    write_png(draw_tile_png(300, 180, OBSIDIAN, IVORY), BRANDING / "VisualElements_150.png")
+    write_png(draw_tile_png(142, 92, OBSIDIAN, IVORY), BRANDING / "VisualElements_70.png")
+    write_png(draw_tile_png(300, 180, DARK_CHROME, ACCENT), BRANDING / "PrivateBrowsing_150.png")
+    write_png(draw_tile_png(142, 92, DARK_CHROME, ACCENT), BRANDING / "PrivateBrowsing_70.png")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate Argon branding raster assets.")
+    parser.add_argument(
+        "--windows-only",
+        action="store_true",
+        help="Generate only Windows ICO/BMP/VisualElements assets under browser/branding/argon/.",
+    )
+    args = parser.parse_args(argv)
+
+    BRANDING.mkdir(parents=True, exist_ok=True)
+    generate_windows_assets()
+    if args.windows_only:
+        print(f"Generated Windows Argon branding assets under {BRANDING}")
+        return 0
+
     CONTENT.mkdir(parents=True, exist_ok=True)
     BRAND_KIT.mkdir(parents=True, exist_ok=True)
 
