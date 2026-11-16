@@ -161,7 +161,7 @@ jobs:
           using Microsoft.Win32.SafeHandles;
 
           namespace ArgonCi {
-            internal static class NativePagefile {
+            public static class NativePagefile {
               [StructLayout(LayoutKind.Sequential)]
               internal struct LUID {
                 internal uint LowPart;
