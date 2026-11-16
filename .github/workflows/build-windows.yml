@@ -59,8 +59,8 @@ jobs:
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
 
           # Reclaim optional pre-installed caches/toolchains when running on ephemeral hosted runners.
-          # Use cmd `rd /s /q` first because PowerShell Remove-Item is much slower on deep NTFS trees.
-          foreach ($pattern in @(
+          # Delete independent trees in parallel with `rd /s /q` so deep NTFS trees finish quickly.
+          $targets = @(
             "C:\Android",
             "C:\Program Files (x86)\Android",
             "C:\ghcup",
@@ -80,16 +80,13 @@ jobs:
             "C:\Program Files (x86)\Microsoft SDKs\Azure",
             "C:\ProgramData\chocolatey\lib",
             "$env:USERPROFILE\.nuget\packages"
-          )) {
-            Get-Item -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
-              $target = $_.FullName
-              Write-Host "Removing $target..."
-              if ($_.PSIsContainer) {
-                cmd /c "rd /s /q `"$target`" >nul 2>&1"
-              }
-              if (Test-Path $target) {
-                Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue
-              }
+          ) | ForEach-Object { Get-Item -Path $_ -ErrorAction SilentlyContinue } | ForEach-Object { $_.FullName }
+
+          $targets | ForEach-Object -ThrottleLimit 6 -Parallel {
+            Write-Host "Removing $_..."
+            cmd /c "rd /s /q `"$_`" >nul 2>&1"
+            if (Test-Path $_) {
+              Remove-Item -Path $_ -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
 

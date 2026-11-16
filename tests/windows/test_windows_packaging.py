@@ -69,7 +69,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.wp = load_win_package()
         self._tmp = tempfile.TemporaryDirectory(prefix="argon-winpkg-")
         self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = Path(self._tmp.name).resolve()
 
     def _make_runtime(self, *, with_full_omni: bool = True, with_dll: bool = False, pe_bytes: bytes | None = None) -> Path:
         rt = self.root / "runtime"

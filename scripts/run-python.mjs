@@ -31,11 +31,15 @@ export function isWindowsStoreAlias(filePath) {
     return true;
   }
   try {
-    const stat = fs.lstatSync(filePath);
+    const stat = fs.statSync(filePath);
     if (path.basename(normalized).startsWith("python") && stat.size === 0) {
       return true;
     }
-  } catch {
+  } catch (err) {
+    if (err && (err.code === "EINVAL" || err.errno === -4071 || err.code === "UNKNOWN") &&
+        path.basename(normalized).startsWith("python")) {
+      return true;
+    }
     return false;
   }
   return false;

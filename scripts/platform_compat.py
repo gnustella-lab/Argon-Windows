@@ -200,7 +200,7 @@ def memory_gib() -> float | None:
 
 
 def is_windows_store_stub(path: str | Path, windows: bool | None = None) -> bool:
-    """Return True if path points to the 0-byte Microsoft Store WindowsApps alias."""
+    """Return True if path points to a 0-byte Microsoft Store WindowsApps alias/stub."""
     use_windows = is_windows() if windows is None else windows
     if not use_windows or not path:
         return False
@@ -208,12 +208,17 @@ def is_windows_store_stub(path: str | Path, windows: bool | None = None) -> bool
     lowered_parts = [part.lower() for part in Path(raw).parts]
     if "microsoft" in lowered_parts and "windowsapps" in lowered_parts:
         return True
+    candidate = Path(raw)
     try:
-        candidate = Path(raw)
-        stat = candidate.lstat()
+        # Follow valid symlinks/hardlinks (e.g. actions/setup-python shims have lstat size 0
+        # while the real target executable is non-empty); broken APPEXECLINK reparse points
+        # raise WinError 1920 on stat().
+        stat = candidate.stat()
         if candidate.name.lower().startswith("python") and stat.st_size == 0:
             return True
-    except OSError:
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1920 and candidate.name.lower().startswith("python"):
+            return True
         return False
     return False
 
