@@ -124,7 +124,7 @@ export function createCommandRegistry({
         id: "appearance.theme.system",
         title: "Switch Theme: System Auto",
         category: "Appearance",
-        description: "Follow the Linux desktop color scheme automatically",
+        description: "Follow the OS color scheme automatically",
         keywords: ["theme", "system", "auto", "os"],
         run: () => appearance?.setTheme?.("system"),
       },

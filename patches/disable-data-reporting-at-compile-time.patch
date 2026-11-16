@@ -117,12 +117,12 @@ diff --git a/toolkit/library/rust/gkrust-features.mozbuild b/toolkit/library/rus
 index 44206cc469..333379baa0 100644
 --- a/toolkit/library/rust/gkrust-features.mozbuild
 +++ b/toolkit/library/rust/gkrust-features.mozbuild
-@@ -57,7 +57,7 @@ if CONFIG["MOZ_WEBRTC"]:
+@@ -57,7 +57,6 @@ if CONFIG["MOZ_WEBRTC"]:
  # We need to tell Glean it is being built with Gecko.
  gkrust_features += ["glean_with_gecko"]
  
 -if not CONFIG["MOZILLA_OFFICIAL"]:
-+if CONFIG["MOZILLA_OFFICIAL"]:
-     gkrust_features += ["glean_disable_upload"]
+-    gkrust_features += ["glean_disable_upload"]
++gkrust_features += ["glean_disable_upload"]
  
  if CONFIG["MOZ_ENABLE_DBUS"]:

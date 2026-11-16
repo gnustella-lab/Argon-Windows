@@ -813,6 +813,10 @@
     {
       "from": "argon/adblock/compile-client.mjs",
       "to": "browser/base/content/argon/adblock/compile-client.mjs"
+    },
+    {
+      "from": "browser/app/argon.exe.manifest",
+      "to": "browser/app/argon.exe.manifest"
     }
   ],
   "branding": {
@@ -1714,9 +1718,10 @@
       "replace_line": "imply_option(\"MOZ_APP_VENDOR\", \"Mozilla\")",
       "lines": [
         "imply_option(\"MOZ_APP_VENDOR\", \"Argon\")",
-        "imply_option(\"MOZ_APP_PROFILE\", \"argon\")"
+        "imply_option(\"MOZ_APP_PROFILE\", \"argon\")",
+        "imply_option(\"MOZ_APP_UA_NAME\", \"Firefox\")"
       ],
-      "note": "Application vendor and profile directory (application.ini Vendor and Profile fields). Both are project_flag() options upstream with possible_origins=('implied',), so they must be set via imply_option() rather than the mozconfig."
+      "note": "Application vendor, profile directory (application.ini Vendor and Profile fields), and Firefox-compatible UA token. All are project_flag()/option inputs upstream whose effective origins require imply_option() rather than mozconfig."
     },
     {
       "path": "browser/components/preferences/config/search.mjs",

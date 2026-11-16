@@ -181,7 +181,8 @@
 /* Theme the tokens consumed by the native tab content/background, URL bar,
  * sidebar and window controls. Coloring only the outer <tab> leaves its
  * children using the OS theme, including white text on a light surface. */
-:root[data-argon-color-scheme] {
+:root[data-argon-color-scheme],
+:root[data-argon-color-scheme][data-argon-color-scheme] body {
   --toolbox-background-color: var(--argon-bg);
   --toolbox-background-color-inactive: var(--argon-bg);
   --toolbox-text-color: var(--argon-text);
@@ -212,12 +213,14 @@
   --chrome-content-separator-color: var(--argon-border);
 }
 
-:root[data-argon-color-scheme="light"] {
+:root[data-argon-color-scheme="light"],
+:root[data-argon-color-scheme="light"][data-argon-color-scheme="light"] body {
   --toolbar-color-scheme: light;
   --tab-selected-color-scheme: light;
 }
 
-:root[data-argon-color-scheme="dark"] {
+:root[data-argon-color-scheme="dark"],
+:root[data-argon-color-scheme="dark"][data-argon-color-scheme="dark"] body {
   --toolbar-color-scheme: dark;
   --tab-selected-color-scheme: dark;
 }
@@ -434,6 +437,27 @@
   order: 4;
 }
 
+/* Windows / customtitlebar caption button placement & legibility. */
+:root[customtitlebar] #navigator-toolbox .titlebar-buttonbox-container {
+  align-self: stretch;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
+:root[customtitlebar] #navigator-toolbox .titlebar-button {
+  color: var(--toolbar-text-color, var(--argon-text));
+  -moz-window-dragging: no-drag;
+}
+
+:root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"]) #navigator-toolbox:not([tabs-hidden]) > #TabsToolbar > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
+  display: none;
+}
+
+:root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"], [popup-window], [inFullscreen], [taskbartab]) #toolbar-menubar:is([autohide], [collapsed]) ~ #nav-bar > :is(.titlebar-buttonbox-container, .titlebar-spacer),
+:root[customtitlebar][data-argon-toolbar-placement="top-reversed"]:not([data-argon-tabs="vertical"]):is([popup-window], [inFullscreen], [taskbartab]) #nav-bar > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
+  display: flex;
+}
+
 /* Argon Command Palette (Ctrl+Shift+P) */
 #argon-command-palette-overlay {
   position: fixed;
@@ -572,4 +596,31 @@
   color: var(--argon-danger, #d92d3a);
   background-color: var(--argon-danger-soft, rgba(217, 45, 58, 0.14));
   border-left: 3px solid var(--argon-danger, #d92d3a);
+}
+
+@media (forced-colors: active) {
+  :root[data-argon-color-scheme],
+  :root[data-argon-color-scheme][data-argon-color-scheme] body {
+    --argon-bg: Canvas;
+    --argon-surface: Canvas;
+    --argon-surface-active: ButtonFace;
+    --argon-text: CanvasText;
+    --argon-text-secondary: GrayText;
+    --argon-border: ButtonBorder;
+    --argon-accent: Highlight;
+    --argon-shadow: none;
+  }
+
+  :root[customtitlebar] #navigator-toolbox .titlebar-button {
+    color: ButtonText;
+  }
+
+  .argon-cp-dialog,
+  .argon-adblock-body {
+    border: 1px solid ButtonBorder;
+  }
+
+  .argon-cp-item.selected {
+    outline: 2px solid Highlight;
+  }
 }

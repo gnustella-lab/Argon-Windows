@@ -4,55 +4,98 @@ diff --git a/extensions/pref/autoconfig/src/prefcalls.js b/extensions/pref/autoc
 index 78dd0ee547..4231262f29 100644
 --- a/extensions/pref/autoconfig/src/prefcalls.js
 +++ b/extensions/pref/autoconfig/src/prefcalls.js
-@@ -9,6 +9,54 @@ const LDAPSyncQueryContractID = "@mozilla.org/ldapsyncquery;1";
+@@ -9,6 +9,97 @@ const LDAPSyncQueryContractID = "@mozilla.org/ldapsyncquery;1";
  
  var gIsUTF8;
  
 +{
-+    let profile_directory = null;
 +    let defaults = Services.prefs.getDefaultBranch(null);
++    let overrideURI = null;
 +
-+    let supportsXDG = Services.prefs.getBoolPref("widget.support-xdg-config", false);
-+
-+    if (supportsXDG) {
-+      let isLegacy = false;
-+      {
-+        let dirSvc = Cc["@mozilla.org/file/directory_service;1"]
-+                     .getService(Ci.nsIProperties || Ci.nsIDirectoryService);
-+        let profDir = dirSvc.get("ProfD", Ci.nsIFile);
-+        let path = profDir.path || "";
-+        isLegacy = path.includes(".argon");
-+      }
-+
-+      if (!isLegacy) {
-+        let xdg = Services.env.get("XDG_CONFIG_HOME");
-+        if (xdg) {
-+          profile_directory = xdg;
-+        } else {
-+          let home = Services.env.get("HOME");
-+          profile_directory = home ? (home + "/.config") : null;
++    let appendSegments = (baseDir, segments) => {
++      if (!baseDir) return null;
++      try {
++        let target = baseDir.clone();
++        for (let seg of segments) {
++          target.append(seg);
 +        }
-+        if (profile_directory) {
-+          defaults.setCharPref(
-+            "autoadmin.global_config_url",
-+            `file://${profile_directory}/argon/argon/argon.overrides.cfg`
-+          );
++        return target;
++      } catch {}
++      return null;
++    };
++
++    let toFileURI = (file) => {
++      if (!file) return null;
++      try {
++        return Services.io.newFileURI(file).spec;
++      } catch {}
++      return null;
++    };
++
++    let initLocalFile = (path) => {
++      if (!path) return null;
++      try {
++        let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
++        file.initWithPath(path);
++        return file;
++      } catch {}
++      return null;
++    };
++
++    if (Services.appinfo?.OS === "WINNT") {
++      let dirSvc = Cc["@mozilla.org/file/directory_service;1"]
++                   .getService(Ci.nsIProperties || Ci.nsIDirectoryService);
++      let candidates = [];
++      try {
++        let appData = dirSvc.get("UAppData", Ci.nsIFile);
++        candidates.push(appendSegments(appData, ["Argon", "argon.overrides.cfg"]));
++        candidates.push(appendSegments(appData, ["argon", "argon.overrides.cfg"]));
++      } catch {}
++      try {
++        let homeDir = dirSvc.get("Home", Ci.nsIFile);
++        candidates.push(appendSegments(homeDir, [".argon", "argon.overrides.cfg"]));
++      } catch {}
++      let userProfile = Services.env.get("USERPROFILE");
++      if (userProfile) {
++        candidates.push(appendSegments(initLocalFile(userProfile), [".argon", "argon.overrides.cfg"]));
++      }
++      let chosen = candidates.find((f) => f && f.exists() && f.isFile()) || candidates[0];
++      overrideURI = toFileURI(chosen);
++    } else {
++      let profile_directory = null;
++      let supportsXDG = Services.prefs.getBoolPref("widget.support-xdg-config", false);
++
++      if (supportsXDG) {
++        let isLegacy = false;
++        {
++          let dirSvc = Cc["@mozilla.org/file/directory_service;1"]
++                       .getService(Ci.nsIProperties || Ci.nsIDirectoryService);
++          let profDir = dirSvc.get("ProfD", Ci.nsIFile);
++          let path = profDir.path || "";
++          isLegacy = path.includes(".argon");
++        }
++
++        if (isLegacy) {
++          if ((profile_directory = Services.env.get("HOME"))) {
++            overrideURI = toFileURI(appendSegments(initLocalFile(profile_directory), [".argon", "argon.overrides.cfg"]));
++          }
++        } else {
++          let xdgConfig = Services.env.get("XDG_CONFIG_HOME");
++          if (xdgConfig) {
++            overrideURI = toFileURI(appendSegments(initLocalFile(xdgConfig), ["argon", "argon", "argon.overrides.cfg"]));
++          } else if ((profile_directory = Services.env.get("HOME"))) {
++            overrideURI = toFileURI(appendSegments(initLocalFile(profile_directory), [".config", "argon", "argon", "argon.overrides.cfg"]));
++          }
 +        }
 +      } else {
-+        if (profile_directory = Services.env.get("HOME")) {
-+          defaults.setCharPref(
-+            "autoadmin.global_config_url",
-+            `file://${profile_directory}/.argon/argon.overrides.cfg`
-+          );
++        if ((profile_directory = Services.env.get("HOME"))) {
++          overrideURI = toFileURI(appendSegments(initLocalFile(profile_directory), [".argon", "argon.overrides.cfg"]));
 +        }
 +      }
-+    } else {
-+      if ((profile_directory = Services.env.get("HOME"))) {
-+        defaults.setCharPref(
-+          "autoadmin.global_config_url",
-+          `file://${profile_directory}/.argon/argon.overrides.cfg`
-+        );
-+      }
++    }
++
++    if (overrideURI) {
++      defaults.setCharPref("autoadmin.global_config_url", overrideURI);
 +    }
 +}
 +

@@ -7,7 +7,7 @@ patches/canvas-permission.patch
 patches/clear-alt-svc.patch
 patches/container-tab.patch
 patches/custom-ubo-assets-bootstrap-location.patch
-patches/dbus-name.patch
+[linux] patches/dbus-name.patch
 patches/delete-cookie-permission.patch
 patches/devtools-bypass.patch
 patches/disable-data-reporting-at-compile-time.patch
@@ -57,4 +57,4 @@ patches/remove-pingsender.patch
 patches/rs-blocker.patch
 patches/vendor-name.patch
 patches/webgl-permission.patch
-patches/xdg-dir.patch
+[linux] patches/xdg-dir.patch

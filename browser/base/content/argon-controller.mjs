@@ -305,10 +305,24 @@ export function installArgonAppearance(win, preferences = win.Services.prefs) {
   };
   win.gBrowser?.tabContainer?.addEventListener?.("TabClose", onTabClose);
 
+  const isWindowsHost = () => {
+    const os = win?.Services?.appinfo?.OS ?? win?.AppConstants?.platform;
+    return os === "WINNT" || os === "win" || win?.AppConstants?.MOZ_WIDGET_TOOLKIT === "windows";
+  };
+
+  const syncWindowsCustomTitlebar = (state) => {
+    if (!isWindowsHost()) return;
+    try {
+      win?.CustomTitlebar?.allowedBy?.("argon-bottom", state?.toolbarPlacement !== "bottom");
+    } catch {}
+  };
+
   const customization = createCustomizationController({
     preferences,
     root: doc.documentElement,
+    onChange: syncWindowsCustomTitlebar,
   });
+  syncWindowsCustomTitlebar({ toolbarPlacement: customization?.toolbarPlacement });
 
   const contextualIdentities = (globalThis.ChromeUtils ?? win.ChromeUtils)?.importESModule?.(
     'moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs'
@@ -389,6 +403,9 @@ export function installArgonAppearance(win, preferences = win.Services.prefs) {
       try { win.gBrowser?.removeProgressListener?.(tabsProgressListener); } catch {}
     }
     try { cleanupLazyAdblock?.(); } catch {}
+    try {
+      if (isWindowsHost()) win?.CustomTitlebar?.allowedBy?.("argon-bottom", true);
+    } catch {}
     try { commandPalette?.dispose?.(); } catch {}
     try { workspaces?.dispose?.(); } catch {}
     try { customization?.dispose?.(); } catch {}
