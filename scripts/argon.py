@@ -813,7 +813,13 @@ def command_stage_runtime(workspace, runtime=None, output=None):
 
     shutil.copytree(source_dir, dest_dir, symlinks=False, copy_function=_link_or_copy)
     installed = install_runtime_settings(dest_dir)
-    return {
+    adblock_dll_staged = (dest_dir / "argon_adblock.dll").is_file()
+    if platform_compat.is_windows() and not adblock_dll_staged:
+        win_dll = REPO / "argon" / "adblock" / "argon_adblock.dll"
+        if win_dll.is_file():
+            _copy_isolated(win_dll, dest_dir / "argon_adblock.dll")
+            adblock_dll_staged = True
+    report = {
         "source": str(source_dir),
         "runtime": str(dest_dir),
         "binary": str(dest_dir / binary.name),
@@ -821,6 +827,9 @@ def command_stage_runtime(workspace, runtime=None, output=None):
         "exit_code": 0,
         "succeeded": True,
     }
+    if platform_compat.is_windows():
+        report["adblock_dll_present"] = adblock_dll_staged
+    return report
 
 
 def command_flatpak(workspace, archive=None, output=None, runtime=None, gpg_sign=None, gpg_homedir=None):
@@ -1604,8 +1613,8 @@ def main(argv=None):
                         help="flatpak: GPG homedir for signing keys")
     parser.add_argument("--launcher-exe", type=Path, default=None,
                         help="win-portable: prebuilt portable launcher executable")
-    parser.add_argument("--launcher-backend", default=None,
-                        help="win-portable: launcher build backend (auto, zig, mingw, cl)")
+    parser.add_argument("--launcher-backend", choices=("auto", "native-c", "dotnet"), default=None,
+                        help="win-portable: launcher build backend (auto, native-c, dotnet)")
     parser.add_argument("--makensis", type=Path, default=None,
                         help="win-installer: path to makensis executable")
     parser.add_argument("--portable", type=Path, default=None,
@@ -1684,6 +1693,8 @@ def main(argv=None):
             runtime = _extract_flag(extra, "--runtime") or args.runtime
             launcher_exe = _extract_flag(extra, "--launcher-exe") or args.launcher_exe
             launcher_backend = _extract_str_flag(extra, "--launcher-backend") or args.launcher_backend or "auto"
+            if launcher_backend not in ("auto", "native-c", "dotnet"):
+                raise BuildError(f"Unsupported launcher backend: {launcher_backend}")
             write_checksums = not (args.no_checksums or "--no-checksums" in extra)
             report = command_win_portable(
                 workspace,
