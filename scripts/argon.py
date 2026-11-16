@@ -561,6 +561,7 @@ def mach_env(mozconfig):
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         mb = platform_compat.find_mozilla_build()
+        env.setdefault("HOME", Path.home().as_posix())
         if mb:
             env.setdefault("MOZILLABUILD", str(mb))
             env.setdefault("MSYSTEM", "MINGW64")
@@ -570,6 +571,7 @@ def mach_env(mozconfig):
                 env.setdefault("CONFIG_SHELL", sh_exe.as_posix())
             path_prefix.extend([
                 mb / "python3",
+                mb / "python3" / "Scripts",
                 mb / "bin",
                 mb / "msys2" / "usr" / "bin",
             ])

@@ -10,11 +10,12 @@
 #   - Runtime: ~90-240 minutes cold compile on 4 cores without warm sccache
 #
 # Standard GitHub-hosted `windows-latest` runner note:
-#   Standard `windows-latest` runners only provide ~14-35 GB free disk even after
-#   pruning unused toolcaches, and have a hard 360-minute job timeout. Therefore
-#   this workflow triggers on manual dispatch (where a larger or self-hosted
-#   Windows runner can be selected via `inputs.runner`) and release tags `v*`,
-#   and never simulates or skips failed Gecko compilation.
+#   Standard `windows-latest` runners have ~14-35 GB free before cleanup and
+#   a hard 360-minute job timeout. This workflow prunes unused preinstalled SDKs
+#   and caches before checkout and triggers on `push` to `main` / `v*` tags
+#   (matching `.github/workflows/build.yml`) plus `workflow_dispatch` (where a
+#   larger or self-hosted runner can also be selected via `inputs.runner`).
+#   It never simulates or skips failed Gecko compilation.
 
 name: Build Argon Browser (Windows)
 
@@ -32,6 +33,7 @@ on:
         default: "windows-latest"
         type: string
   push:
+    branches: [main]
     tags: ["v*"]
 
 concurrency:
@@ -56,17 +58,36 @@ jobs:
           Write-Host "Host RAM: $ramGiB GiB"
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
 
-          # Reclaim optional pre-installed caches when running on ephemeral hosted runners.
-          foreach ($dir in @(
+          # Reclaim optional pre-installed caches/toolchains when running on ephemeral hosted runners.
+          foreach ($pattern in @(
             "C:\Android",
+            "C:\Program Files (x86)\Android",
+            "C:\ghcup",
+            "C:\haskell",
+            "C:\Strawberry",
+            "C:\msys64",
+            "C:\vcpkg",
+            "C:\SeleniumWebDrivers",
             "C:\hostedtoolcache\windows\CodeQL",
+            "C:\hostedtoolcache\windows\Java*",
+            "C:\hostedtoolcache\windows\Ruby",
+            "C:\hostedtoolcache\windows\PyPy",
+            "C:\hostedtoolcache\windows\Go",
+            "C:\hostedtoolcache\windows\boost",
+            "C:\hostedtoolcache\windows\LLVM",
+            "C:\Program Files\Microsoft SDKs\Azure",
+            "C:\Program Files (x86)\Microsoft SDKs\Azure",
             "C:\ProgramData\chocolatey\lib",
-            "C:\Program Files\Microsoft SDKs\Azure"
+            "$env:USERPROFILE\.nuget\packages"
           )) {
-            if (Test-Path $dir) {
-              Remove-Item -Path $dir -Recurse -Force -ErrorAction SilentlyContinue
+            Get-Item -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "Removing $($_.FullName)..."
+              Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
+
+          Write-Host "Disk space after cleanup:"
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
 
           $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 } | Sort-Object Free -Descending
           $best = $drives[0]
@@ -77,10 +98,23 @@ jobs:
             Write-Warning "Only $freeGiB GiB free on $root; a cold Windows Gecko source build typically needs 55-65 GiB free. Standard GitHub-hosted windows-latest runners may run out of disk or exceed 360 minutes without a larger/self-hosted runner."
           }
 
-          "ARGON_WORKSPACE=$root\argon-build" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MOZBUILD_STATE_PATH=$root\.mozbuild" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CARGO_HOME=$root\.cargo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "RUSTUP_HOME=$root\.rustup" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $argonWs = "$root\argon-build"
+          $mozbuildState = "$root\.mozbuild"
+          $cargoHome = "$root\.cargo"
+          $rustupHome = "$root\.rustup"
+
+          "ARGON_WORKSPACE=$argonWs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MOZBUILD_STATE_PATH=$mozbuildState" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_HOME=$cargoHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUSTUP_HOME=$rustupHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
+            foreach ($exDir in @($argonWs, $mozbuildState, $cargoHome, $rustupHome, $env:MOZILLABUILD, $env:GITHUB_WORKSPACE)) {
+              if ($exDir) {
+                Add-MpPreference -ExclusionPath $exDir -ErrorAction SilentlyContinue
+              }
+            }
+          }
 
       - uses: actions/checkout@v4
 
@@ -114,7 +148,10 @@ jobs:
           if (-not (Test-Path "$env:MOZILLABUILD\start-shell.bat")) {
             choco install mozillabuild -y --no-progress
           }
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+          if (-not (Test-Path "$env:MOZILLABUILD\msys2\usr\bin\sh.exe")) {
+            throw "MozillaBuild sh.exe missing under $env:MOZILLABUILD"
+          }
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") -and -not (Get-ChildItem "$env:MOZILLABUILD\nsis*\makensis.exe" -ErrorAction SilentlyContinue)) {
             choco install nsis -y --no-progress
           }
           if (Test-Path "C:\Program Files (x86)\NSIS") {
@@ -181,10 +218,15 @@ jobs:
           foreach ($expected in @("Name=Argon", "Vendor=Argon", "Profile=argon", "RemotingName=argon")) {
             if ($ini -notcontains $expected) { throw "application.ini missing $expected" }
           }
+          $vi = (Get-Item $bin).VersionInfo
+          Write-Host "PE ProductName='$($vi.ProductName)' FileDescription='$($vi.FileDescription)' ProductVersion='$($vi.ProductVersion)'"
+          if ("$($vi.ProductName) $($vi.FileDescription)" -notmatch "Argon") {
+            throw "PE VersionInfo missing Argon identity on $bin"
+          }
           $ver = (& $bin --version | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw "argon.exe --version exited with $LASTEXITCODE" }
-          Write-Host "argon.exe --version -> $ver"
-          if ($ver -notmatch "Argon") { throw "argon.exe --version did not report Argon" }
+          Write-Host "argon.exe --version -> '$ver'"
+          if ($ver -and $ver -notmatch "Argon") { throw "argon.exe --version did not report Argon" }
 
       - name: Run Marionette browser regression suites against compiled Argon binary
         shell: pwsh
