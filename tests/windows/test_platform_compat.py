@@ -60,8 +60,11 @@ class PlatformCompatTests(unittest.TestCase):
         (stub_dir / "python.exe").write_bytes(b"")
 
         with mock.patch.dict(os.environ, {"ARGON_PYTHON": sys.executable}):
+            discovered_explicit = self.pc.find_python()
+            self.assertIsNotNone(discovered_explicit)
+            assert discovered_explicit is not None
             self.assertEqual(
-                os.path.normcase(self.pc.find_python() or ""),
+                os.path.normcase(str(Path(discovered_explicit).resolve())),
                 os.path.normcase(str(Path(sys.executable).resolve())),
             )
 
