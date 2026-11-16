@@ -8,7 +8,7 @@ This directory contains the hardened default configuration inherited from LibreW
 
 User overrides can be placed in:
 - Linux: `~/.argon/argon.overrides.cfg` or `~/.config/argon/argon/argon.overrides.cfg`
-- Windows: `%APPDATA%\Argon\argon.overrides.cfg` or `%USERPROFILE%\.argon\argon.overrides.cfg`
+- Windows: `%APPDATA%\argon\argon.overrides.cfg`, `%APPDATA%\Argon\argon.overrides.cfg`, or `%USERPROFILE%\.argon\argon.overrides.cfg`
 
 Argon keeps persistent cookies and site data when the browser closes by default.
 Clearing data on shutdown is opt-in through Privacy settings; explicit user

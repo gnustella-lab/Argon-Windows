@@ -4,7 +4,7 @@ diff --git a/extensions/pref/autoconfig/src/prefcalls.js b/extensions/pref/autoc
 index 78dd0ee547..4231262f29 100644
 --- a/extensions/pref/autoconfig/src/prefcalls.js
 +++ b/extensions/pref/autoconfig/src/prefcalls.js
-@@ -9,6 +9,97 @@ const LDAPSyncQueryContractID = "@mozilla.org/ldapsyncquery;1";
+@@ -9,6 +9,105 @@ const LDAPSyncQueryContractID = "@mozilla.org/ldapsyncquery;1";
  
  var gIsUTF8;
  
@@ -42,14 +42,22 @@ index 78dd0ee547..4231262f29 100644
 +      return null;
 +    };
 +
-+    if (Services.appinfo?.OS === "WINNT") {
++    let os = "";
++    try {
++      os = Services.appinfo?.OS || "";
++    } catch {}
++
++    if (os === "WINNT") {
 +      let dirSvc = Cc["@mozilla.org/file/directory_service;1"]
 +                   .getService(Ci.nsIProperties || Ci.nsIDirectoryService);
 +      let candidates = [];
 +      try {
-+        let appData = dirSvc.get("UAppData", Ci.nsIFile);
-+        candidates.push(appendSegments(appData, ["Argon", "argon.overrides.cfg"]));
-+        candidates.push(appendSegments(appData, ["argon", "argon.overrides.cfg"]));
++        let userAppData = dirSvc.get("UAppData", Ci.nsIFile);
++        candidates.push(appendSegments(userAppData, ["argon.overrides.cfg"]));
++      } catch {}
++      try {
++        let roamingAppData = dirSvc.get("AppData", Ci.nsIFile);
++        candidates.push(appendSegments(roamingAppData, ["Argon", "argon.overrides.cfg"]));
 +      } catch {}
 +      try {
 +        let homeDir = dirSvc.get("Home", Ci.nsIFile);
@@ -67,13 +75,13 @@ index 78dd0ee547..4231262f29 100644
 +
 +      if (supportsXDG) {
 +        let isLegacy = false;
-+        {
++        try {
 +          let dirSvc = Cc["@mozilla.org/file/directory_service;1"]
 +                       .getService(Ci.nsIProperties || Ci.nsIDirectoryService);
 +          let profDir = dirSvc.get("ProfD", Ci.nsIFile);
 +          let path = profDir.path || "";
 +          isLegacy = path.includes(".argon");
-+        }
++        } catch {}
 +
 +        if (isLegacy) {
 +          if ((profile_directory = Services.env.get("HOME"))) {
