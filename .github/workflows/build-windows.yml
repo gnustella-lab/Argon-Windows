@@ -62,39 +62,48 @@ jobs:
             Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
           }
 
-          # Reclaim largest optional pre-installed SDKs/caches (leave C:\Program Files\Microsoft Visual Studio intact).
-          $targets = @(
-            "C:\Android",
-            "C:\Program Files (x86)\Android",
-            "C:\ghcup",
-            "C:\msys64",
-            "C:\vcpkg",
-            "C:\Strawberry",
-            "C:\hostedtoolcache\windows\CodeQL",
-            "C:\hostedtoolcache\windows\Java*",
-            "C:\hostedtoolcache\windows\Ruby",
-            "C:\hostedtoolcache\windows\PyPy",
-            "C:\hostedtoolcache\windows\Go",
-            "C:\hostedtoolcache\windows\boost",
-            "C:\Program Files\Microsoft SDKs\Azure",
-            "C:\Program Files (x86)\Microsoft SDKs\Azure",
-            "C:\Program Files\dotnet\packs",
-            "C:\ProgramData\chocolatey\lib",
-            "$env:USERPROFILE\.nuget\packages"
-          ) | ForEach-Object { Get-Item -Path $_ -ErrorAction SilentlyContinue } | ForEach-Object { $_.FullName }
-
-          $targets | ForEach-Object -ThrottleLimit 8 -Parallel {
-            Write-Host "Removing $_..."
-            cmd /c "rd /s /q `"$_`" >nul 2>&1"
-          }
-
-          Write-Host "Disk space after cleanup:"
-          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
-
           $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 } | Sort-Object Free -Descending
           $best = $drives[0]
           $freeGiB = [math]::Round($best.Free / 1GB, 2)
           $root = "$($best.Name):"
+
+          if ($freeGiB -lt 65) {
+            Write-Host "Largest drive $root has $freeGiB GiB free (< 65 GiB); freeing optional pre-installed toolcaches..."
+            $targets = @(
+              "C:\Android",
+              "C:\Program Files (x86)\Android",
+              "C:\ghcup",
+              "C:\msys64",
+              "C:\vcpkg",
+              "C:\Strawberry",
+              "C:\hostedtoolcache\windows\CodeQL",
+              "C:\hostedtoolcache\windows\Java*",
+              "C:\hostedtoolcache\windows\Ruby",
+              "C:\hostedtoolcache\windows\PyPy",
+              "C:\hostedtoolcache\windows\Go",
+              "C:\hostedtoolcache\windows\boost",
+              "C:\Program Files\Microsoft SDKs\Azure",
+              "C:\Program Files (x86)\Microsoft SDKs\Azure",
+              "C:\Program Files\dotnet\packs",
+              "C:\ProgramData\chocolatey\lib",
+              "$env:USERPROFILE\.nuget\packages"
+            ) | ForEach-Object { Get-Item -Path $_ -ErrorAction SilentlyContinue } | ForEach-Object { $_.FullName }
+
+            $targets | ForEach-Object -ThrottleLimit 8 -Parallel {
+              Write-Host "Removing $_..."
+              cmd /c "rd /s /q `"$_`" >nul 2>&1"
+            }
+
+            Write-Host "Disk space after cleanup:"
+            Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free/1GB,2)}}, @{n='UsedGB';e={[math]::Round($_.Used/1GB,2)}}
+            $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 } | Sort-Object Free -Descending
+            $best = $drives[0]
+            $freeGiB = [math]::Round($best.Free / 1GB, 2)
+            $root = "$($best.Name):"
+          } else {
+            Write-Host "Skipping multi-minute C: cleanup because $root already has $freeGiB GiB free."
+          }
+
           Write-Host "Selected largest drive $root ($freeGiB GiB free)"
           if ($freeGiB -lt 55) {
             Write-Warning "Only $freeGiB GiB free on $root; a cold Windows Gecko source build typically needs 55-65 GiB free. Standard GitHub-hosted windows-latest runners may run out of disk or exceed 360 minutes without a larger/self-hosted runner."
@@ -104,14 +113,19 @@ jobs:
           $mozbuildState = "$root\.mozbuild"
           $cargoHome = "$root\.cargo"
           $rustupHome = "$root\.rustup"
+          $tempDir = "$root\temp"
+          New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
           "ARGON_WORKSPACE=$argonWs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MOZBUILD_STATE_PATH=$mozbuildState" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CARGO_HOME=$cargoHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RUSTUP_HOME=$rustupHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TEMP=$tempDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$tempDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MACH_HIDE_DEV_DRIVE_SUGGESTION=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
-            foreach ($exDir in @($argonWs, $mozbuildState, $cargoHome, $rustupHome, $env:MOZILLABUILD, $env:GITHUB_WORKSPACE)) {
+            foreach ($exDir in @($argonWs, $mozbuildState, $cargoHome, $rustupHome, $tempDir, $env:MOZILLABUILD, $env:GITHUB_WORKSPACE)) {
               if ($exDir) {
                 Add-MpPreference -ExclusionPath $exDir -ErrorAction SilentlyContinue
               }
@@ -199,6 +213,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Pre-seed CARGO_HOME\bin and RUSTUP_HOME default toolchain if rustup exists on runner without a toolchain in $RUSTUP_HOME.
+          $preCargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+          $cargoBin = Join-Path $env:CARGO_HOME "bin"
+          if ((Test-Path $preCargoBin) -and -not (Test-Path (Join-Path $cargoBin "rustup.exe"))) {
+            New-Item -ItemType Directory -Path $cargoBin -Force | Out-Null
+            Copy-Item -Path (Join-Path $preCargoBin "*.exe") -Destination $cargoBin -Force -ErrorAction SilentlyContinue
+          }
+          if (Test-Path $cargoBin) {
+            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:Path = "$cargoBin;$env:Path"
+          }
+          $rustupExe = Get-Command rustup -ErrorAction SilentlyContinue
+          if ($rustupExe) {
+            $toolchains = (& $rustupExe.Source toolchain list 2>&1 | Out-String)
+            if ($toolchains -notmatch '\(default\)') {
+              & $rustupExe.Source toolchain install stable --profile minimal --no-self-update
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              & $rustupExe.Source default stable
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
           npm run bootstrap
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run doctor
