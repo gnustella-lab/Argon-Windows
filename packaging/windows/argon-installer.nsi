@@ -201,8 +201,6 @@ Section "${BrandFullName} (Required)" SecMain
   !insertmacro WriteHiveStr "${StartMenuKey}" "" "${BrandShortName}"
   !insertmacro WriteHiveStr "${StartMenuKey}\DefaultIcon" "" "$INSTDIR\${FileMainEXE},${IDI_APPICON_ZERO_BASED}"
   !insertmacro WriteHiveStr "${StartMenuKey}\shell\open\command" "" '"$INSTDIR\${FileMainEXE}"'
-  !insertmacro WriteHiveStr "${StartMenuKey}\InstallInfo" "HideIconsCommand" '"$INSTDIR\uninstall\helper.exe" /HideShortcuts'
-  !insertmacro WriteHiveStr "${StartMenuKey}\InstallInfo" "ShowIconsCommand" '"$INSTDIR\uninstall\helper.exe" /ShowShortcuts'
   !insertmacro WriteHiveDWORD "${StartMenuKey}\InstallInfo" "IconsVisible" 1
 
   !insertmacro WriteHiveStr "${CapabilitiesKey}" "ApplicationDescription" "${BrandFullName}"

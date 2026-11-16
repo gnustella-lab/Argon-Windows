@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-#include <winres.h>
+#include <winresrc.h>
+
+#ifndef RT_MANIFEST
+#define RT_MANIFEST 24
+#endif
 
 #ifdef HAVE_VERSION_DEFS
 #include "version_defs.h"

@@ -182,7 +182,7 @@ def _detect_adblock_dll(app_dir: Path) -> bool:
 
 
 def _stage_visual_elements(app_dir: Path) -> None:
-    """Ensure Windows Start tile manifest uses Argon's binary name alongside upstream files."""
+    """Ensure Windows Start tile manifest and tile PNGs are staged in the runtime."""
     if not BRANDING_DIR.is_dir():
         return
     src_manifest = BRANDING_DIR / "firefox.VisualElementsManifest.xml"
@@ -192,14 +192,27 @@ def _stage_visual_elements(app_dir: Path) -> None:
     ff_manifest = app_dir / "firefox.VisualElementsManifest.xml"
     if ff_manifest.is_file() and not dst_manifest.is_file():
         _copy_isolated(ff_manifest, dst_manifest)
-    ve_src = BRANDING_DIR / "VisualElements"
-    if ve_src.is_dir():
-        ve_dst = app_dir / "browser" / "VisualElements"
-        ve_dst.mkdir(parents=True, exist_ok=True)
-        for png in ve_src.glob("*.png"):
-            target = ve_dst / png.name
+    pb_src = BRANDING_DIR / "private_browsing.VisualElementsManifest.xml"
+    pb_dst = app_dir / "private_browsing.VisualElementsManifest.xml"
+    if pb_src.is_file() and not pb_dst.is_file():
+        _copy_isolated(pb_src, pb_dst)
+
+    ve_dst = app_dir / "browser" / "VisualElements"
+    ve_names = (
+        "VisualElements_150.png",
+        "VisualElements_70.png",
+        "PrivateBrowsing_150.png",
+        "PrivateBrowsing_70.png",
+    )
+    for png_name in ve_names:
+        src_png = BRANDING_DIR / png_name
+        if not src_png.is_file():
+            src_png = BRANDING_DIR / "VisualElements" / png_name
+        if src_png.is_file():
+            ve_dst.mkdir(parents=True, exist_ok=True)
+            target = ve_dst / png_name
             if not target.is_file():
-                _copy_isolated(png, target)
+                _copy_isolated(src_png, target)
 
 
 def _is_unsafe_archive_member(name: str, is_symlink: bool = False) -> bool:
@@ -402,7 +415,11 @@ def _compile_native_c_launcher(
         raise WinPackageError(f"Missing portable C source: {c_src}")
 
     res_obj: Path | None = None
-    if rc and rc_src.is_file() and icon_path and icon_path.is_file():
+    if rc_src.is_file() and icon_path and icon_path.is_file():
+        if not rc:
+            raise WinPackageError(
+                f"Resource compiler (llvm-rc / rc.exe / windres) not found alongside {cc.name}"
+            )
         work_rc = build_dir / "rc_work"
         work_rc.mkdir(parents=True, exist_ok=True)
         shutil.copy2(rc_src, work_rc / "argon-portable.rc")
@@ -435,8 +452,10 @@ def _compile_native_c_launcher(
                 str(res_out),
             ]
         rc_proc = subprocess.run(rc_cmd, cwd=work_rc, capture_output=True, text=True, check=False)
-        if rc_proc.returncode == 0 and res_out.is_file():
-            res_obj = res_out
+        if rc_proc.returncode != 0 or not res_out.is_file():
+            detail = (rc_proc.stderr or rc_proc.stdout or "").strip()
+            raise WinPackageError(f"Resource compiler failed ({rc.name}): {detail}")
+        res_obj = res_out
 
     if kind in ("clang-cl", "cl"):
         cmd = [
