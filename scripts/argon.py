@@ -8,17 +8,21 @@ profile directory, remoting name, and vendor.
 
 Commands are deliberately small and fail closed:
 
-    doctor     report the toolchain, the build mode, and known blockers
-    fetch      download the pinned archive, verify it, extract it
-    apply      apply the Argon changes to the checkout (all-or-nothing)
-    bootstrap  let mach install the compilers and toolchains it needs
-    build      ./mach build; a full source build with the Argon identity by
-               default, or --artifact for a front-end-only loop
-    run        launch the built browser with an isolated development profile
-    package      ./mach package, producing the distributable archive
-    flatpak      package a built Argon archive or runtime into an io.github.argon_browser.Argon.flatpak bundle
-    flatpak-repo build a static Flatpak OSTree repository and .flatpakrepo file from .flatpak bundles
+    doctor          report the toolchain, the build mode, and known blockers
+    fetch           download the pinned archive, verify it, extract it
+    apply           apply the Argon changes to the checkout (all-or-nothing)
+    bootstrap       let mach install the compilers and toolchains it needs
+    build           ./mach build; a full source build with the Argon identity by
+                    default, or --artifact for a front-end-only loop
+    run             launch the built browser with an isolated development profile
+    package         ./mach package, producing the distributable archive
+    stage-runtime   stage a runnable Argon runtime with settings/ without mutating dist/bin
+    flatpak         package a built Argon archive or runtime into an io.github.argon_browser.Argon.flatpak bundle
+    flatpak-repo    build a static Flatpak OSTree repository and .flatpakrepo file from .flatpak bundles
     verify-flatpak  validate Flatpak metadata and verify a built .flatpak bundle in isolation
+    win-portable    package an isolated Windows portable ZIP + launcher via scripts/win_package.py
+    win-installer   build a Windows NSIS installer via scripts/win_package.py
+    verify-windows  verify Windows portable ZIP, installer, checksums, and runtime settings
 
 Every write is confined to a dedicated ASCII workspace owned by this tool, and
 nothing claims that a build succeeded unless ./mach actually did.
@@ -42,10 +46,17 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import platform_compat
+
 REPO = Path(__file__).resolve().parents[1]
 LOCK = REPO / "config" / "firefox.lock.json"
 OVERLAY = REPO / "config" / "overlay.json"
 MOZCONFIG = REPO / "config" / "mozconfig"
+MOZCONFIG_WINDOWS = REPO / "config" / "mozconfig.windows"
 FLATPAK_DIR = REPO / "packaging" / "flatpak"
 
 APP_NAME = "argon"
@@ -94,8 +105,13 @@ def default_workspace():
     """Outside the repository: its path has spaces, and an objdir needs ~30 GB."""
     if os.environ.get("ARGON_WORKSPACE"):
         return Path(os.environ["ARGON_WORKSPACE"])
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    return cache / "argon-build"
+    if os.environ.get("XDG_CACHE_HOME"):
+        return Path(os.environ["XDG_CACHE_HOME"]) / "argon-build"
+    home_cache = Path.home() / ".cache" / "argon-build"
+    if platform_compat.is_windows() and not platform_compat.is_safe_workspace_path(home_cache, REPO):
+        drive = Path.home().drive or os.environ.get("SystemDrive", "C:")
+        return Path(f"{drive}\\argon-build")
+    return home_cache
 
 
 class BuildError(Exception):
@@ -103,10 +119,7 @@ class BuildError(Exception):
 
 
 def no_symlinks(path):
-    path = Path(path).absolute()
-    if ".." in path.parts or any(p.is_symlink() for p in [path, *path.parents]):
-        raise BuildError(f"Unsafe path (traversal or symlink): {path}")
-    return path
+    return platform_compat.no_symlinks(path, error_cls=BuildError)
 
 
 def sha256_file(path):
@@ -121,9 +134,7 @@ class Workspace:
     def __init__(self, repo, path):
         self.repo = no_symlinks(repo)
         self.path = no_symlinks(path)
-        if (self.path in [Path("/"), Path.home(), self.repo]
-                or self.path in self.repo.parents
-                or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(self.path))):
+        if not platform_compat.is_safe_workspace_path(self.path, self.repo):
             raise BuildError("Workspace requires a dedicated ASCII path without spaces or shell metacharacters")
         self.source = self.path / "source"
         self.obj = self.path / "obj"
@@ -134,19 +145,19 @@ class Workspace:
         marker = self.path / ".argon-workspace.json"
         identity = {"schema": 1, "owner": WORKSPACE_OWNER, "repository": str(self.repo)}
         if marker.exists():
-            if json.loads(marker.read_text()) != identity:
+            if json.loads(marker.read_text(encoding="utf-8")) != identity:
                 raise BuildError("Workspace belongs to another repository")
         else:
             if self.path.exists() and any(self.path.iterdir()):
                 raise BuildError("Refusing unowned nonempty workspace")
             self.path.mkdir(parents=True, exist_ok=True)
-            marker.write_text(json.dumps(identity, indent=2) + "\n")
+            platform_compat.write_text_lf(marker, json.dumps(identity, indent=2) + "\n")
         return self
 
 
 def load_json(path, label):
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise BuildError(f"Missing {label}: {path}") from None
     except json.JSONDecodeError as exc:
@@ -187,13 +198,16 @@ def safe_extract(archive, destination, expected_root):
                 raise BuildError(
                     f"archive_root mismatch: expected {expected_root}, found {sorted(roots)}"
                 )
-            tar.extractall(staging)
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(staging, filter="data")
+            else:
+                tar.extractall(staging)
         extracted = staging / expected_root
         if destination.exists():
-            shutil.rmtree(destination)
+            platform_compat.rmtree_retry(destination)
         shutil.move(str(extracted), str(destination))
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        platform_compat.rmtree_retry(staging)
     mach = destination / "mach"
     if mach.is_file():
         mach.chmod(mach.stat().st_mode | 0o111)
@@ -232,7 +246,7 @@ def command_fetch(workspace, lock_path):
                 f"Checksum mismatch for {source['archive_url']}: "
                 f"expected {source['archive_sha256']}, got {digest}"
             )
-        temp.replace(archive)
+        platform_compat.replace_path(temp, archive)
 
     safe_extract(archive, workspace.source, source["archive_root"])
 
@@ -246,7 +260,7 @@ def command_fetch(workspace, lock_path):
         "hook_sha256": dict(lock.get("hooks", {})),
         "used_cached_archive": used_cache,
     }
-    info_path.write_text(json.dumps(info, indent=2) + "\n")
+    platform_compat.write_text_lf(info_path, json.dumps(info, indent=2) + "\n")
     return {"already_present": False, "source": str(workspace.source), **info}
 
 
@@ -443,7 +457,7 @@ def command_apply(workspace, lock_path, overlay_path):
     if branding:
         target = workspace.source / branding["to"]
         if target.exists():
-            shutil.rmtree(target)
+            platform_compat.rmtree_retry(target)
         shutil.copytree(REPO / branding["from"], target)
         copied.append(branding["to"] + "/")
 
@@ -452,13 +466,19 @@ def command_apply(workspace, lock_path, overlay_path):
         if extra:
             extra[1].parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(*extra)
-        target.write_text(updated, encoding="utf-8")
+        platform_compat.write_text_lf(target, updated)
         hooks.append({"path": relative, "action": action})
 
     return {"source": str(workspace.source), "copied": copied, "hooks": hooks}
 
 
-def mozconfig_lines(workspace, lock, artifact=False, mozconfig_path=MOZCONFIG):
+def default_mozconfig():
+    if platform_compat.is_windows() and MOZCONFIG_WINDOWS.is_file():
+        return MOZCONFIG_WINDOWS
+    return MOZCONFIG
+
+
+def mozconfig_lines(workspace, lock, artifact=False, mozconfig_path=None):
     """The workspace mozconfig: the tracked Argon identity plus local paths.
 
     Full builds (the default) compile Gecko and produce a binary that is Argon
@@ -467,6 +487,8 @@ def mozconfig_lines(workspace, lock, artifact=False, mozconfig_path=MOZCONFIG):
     Firefox's native identity, so they keep only the branding and serve as a
     fast loop for front-end (CSS/JS/XHTML/FTL) work.
     """
+    if mozconfig_path is None:
+        mozconfig_path = default_mozconfig()
     lines = [
         "# Generated by scripts/argon.py; do not edit by hand.",
         f"# Edit {mozconfig_path.relative_to(REPO) if mozconfig_path.is_relative_to(REPO) else mozconfig_path} instead.",
@@ -490,14 +512,19 @@ def mozconfig_lines(workspace, lock, artifact=False, mozconfig_path=MOZCONFIG):
         if not mozconfig_path.is_file():
             raise BuildError(f"Missing Argon mozconfig: {mozconfig_path}")
         lines.append(mozconfig_path.read_text(encoding="utf-8").rstrip("\n"))
-    lines.append(f"mk_add_options MOZ_OBJDIR={workspace.obj}")
+        if platform_compat.is_windows():
+            redist_dir = platform_compat.find_windows_redist_dir()
+            if redist_dir is not None:
+                lines.append(f"ac_add_options --with-redist={redist_dir.as_posix()}")
+    objdir = workspace.obj.as_posix() if platform_compat.is_windows() else str(workspace.obj)
+    lines.append(f"mk_add_options MOZ_OBJDIR={objdir}")
     return lines
 
 
 def write_mozconfig(workspace, lock, artifact=False):
     workspace.path.mkdir(parents=True, exist_ok=True)
     path = workspace.path / "mozconfig"
-    path.write_text("\n".join(mozconfig_lines(workspace, lock, artifact)) + "\n")
+    platform_compat.write_text_lf(path, "\n".join(mozconfig_lines(workspace, lock, artifact)) + "\n")
     return path
 
 
@@ -509,16 +536,44 @@ def detect_vcs(source):
     return None
 
 
+def _prepend_path_entries(env, entries):
+    existing = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+    existing_keys = {platform_compat.norm_path_key(Path(p)) for p in existing if p}
+    additions = []
+    for entry in entries:
+        entry_path = Path(entry)
+        if entry_path.is_dir():
+            key = platform_compat.norm_path_key(entry_path)
+            if key not in existing_keys:
+                existing_keys.add(key)
+                additions.append(str(entry_path))
+    if additions:
+        env["PATH"] = os.pathsep.join([*additions, *existing])
+
+
 def mach_env(mozconfig):
     env = dict(os.environ)
-    env["MOZCONFIG"] = str(mozconfig)
+    env["MOZCONFIG"] = Path(mozconfig).as_posix() if platform_compat.is_windows() else str(mozconfig)
     env["MOZ_BUILD_APP"] = "browser"
     cargo_home = Path(env.get("CARGO_HOME") or Path.home() / ".cargo")
-    cargo_bin = cargo_home / "bin"
-    if cargo_bin.is_dir():
-        path_entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
-        if str(cargo_bin) not in path_entries:
-            env["PATH"] = os.pathsep.join([str(cargo_bin), *path_entries])
+    path_prefix = [cargo_home / "bin"]
+    if platform_compat.is_windows():
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        mb = platform_compat.find_mozilla_build()
+        if mb:
+            env.setdefault("MOZILLABUILD", str(mb))
+            env.setdefault("MSYSTEM", "MINGW64")
+            env.setdefault("MSYS2_PATH_TYPE", "inherit")
+            sh_exe = mb / "msys2" / "usr" / "bin" / "sh.exe"
+            if sh_exe.is_file():
+                env.setdefault("CONFIG_SHELL", sh_exe.as_posix())
+            path_prefix.extend([
+                mb / "python3",
+                mb / "bin",
+                mb / "msys2" / "usr" / "bin",
+            ])
+    _prepend_path_entries(env, path_prefix)
     return env
 
 
@@ -529,19 +584,43 @@ def require_mach(workspace, hint):
     return mach
 
 
+def mach_command(workspace, hint, *mach_args):
+    mach = require_mach(workspace, hint)
+    if not platform_compat.is_windows():
+        return [str(mach), *mach_args]
+    mb = platform_compat.find_mozilla_build()
+    if mb is None and not os.environ.get("MOZILLABUILD") and not shutil.which("sh.exe"):
+        raise BuildError(
+            "MozillaBuild >= 4.0 is required on Windows to run ./mach "
+            "(install MozillaBuild at C:\\mozilla-build or set MOZILLABUILD)"
+        )
+    mb_py = None
+    if mb:
+        for candidate in (mb / "python3" / "python3.exe", mb / "python3" / "python.exe"):
+            if candidate.is_file():
+                mb_py = str(candidate)
+                break
+    python_exe = (
+        mb_py
+        or platform_compat.find_python(min_version=(3, 10), include_current=True)
+        or sys.executable
+    )
+    return [python_exe, str(mach), *mach_args]
+
+
 def command_bootstrap(workspace, lock_path):
     """Install compilers and toolchains (clang, rustc, cbindgen, node) via mach."""
     lock = load_json(lock_path, "lock file")
-    mach = require_mach(workspace, "run fetch and apply first")
     mozconfig = write_mozconfig(workspace, lock)
-    command = [
-        str(mach),
+    command = mach_command(
+        workspace,
+        "run fetch and apply first",
         "--no-interactive",
         "bootstrap",
         "--application-choice",
         "browser",
         "--no-agentic-tools",
-    ]
+    )
     completed = subprocess.run(command, cwd=workspace.source, env=mach_env(mozconfig), check=False)
     return {"command": command, "exit_code": completed.returncode,
             "succeeded": completed.returncode == 0}
@@ -549,23 +628,28 @@ def command_bootstrap(workspace, lock_path):
 
 def command_build(workspace, lock_path, jobs=2, artifact=False):
     lock = load_json(lock_path, "lock file")
-    mach = require_mach(workspace, "run fetch and apply first")
     workspace.obj.mkdir(parents=True, exist_ok=True)
     mozconfig = write_mozconfig(workspace, lock, artifact)
-    command = [str(mach), "build", "--jobs", str(jobs)]
+    command = mach_command(workspace, "run fetch and apply first", "build", "--jobs", str(jobs))
     completed = subprocess.run(command, cwd=workspace.source, env=mach_env(mozconfig), check=False)
+    bin_filename = platform_compat.binary_name("firefox" if artifact else APP_NAME)
     return {
         "mode": "artifact" if artifact else "source",
         "command": command,
         "mozconfig": str(mozconfig),
-        "binary": str(workspace.obj / "dist" / "bin" / (("firefox" if artifact else APP_NAME))),
+        "binary": str(workspace.obj / "dist" / "bin" / bin_filename),
         "exit_code": completed.returncode,
         "succeeded": completed.returncode == 0,
     }
 
 
 def built_binary(workspace):
-    for name in (APP_NAME, "firefox"):
+    candidates = []
+    for base in (APP_NAME, "firefox"):
+        for name in (platform_compat.binary_name(base), base):
+            if name not in candidates:
+                candidates.append(name)
+    for name in candidates:
         candidate = workspace.obj / "dist" / "bin" / name
         if candidate.is_file():
             return candidate
@@ -574,15 +658,23 @@ def built_binary(workspace):
 
 def command_run(workspace, binary=None, extra_args=(), dry_run=False):
     """Launch the built browser with a development profile kept in the workspace."""
-    binary = Path(binary) if binary else built_binary(workspace)
+    if binary is not None:
+        binary = Path(binary)
+        if not binary.is_file() and platform_compat.is_windows() and not binary.suffix:
+            exe_candidate = binary.with_suffix(".exe")
+            if exe_candidate.is_file():
+                binary = exe_candidate
+    else:
+        binary = built_binary(workspace)
     if binary is None or not binary.is_file():
         raise BuildError(
             f"No built browser in {workspace.obj / 'dist' / 'bin'}; run build first "
             "(or pass --binary)"
         )
     command = [str(binary), "--profile", str(workspace.profile), "--no-remote", *extra_args]
+    is_argon = binary.stem.lower() == APP_NAME
     report = {"command": command, "profile": str(workspace.profile),
-              "identity": "argon" if binary.name == APP_NAME else "firefox (artifact build)"}
+              "identity": "argon" if is_argon else "firefox (artifact build)"}
     if dry_run:
         return report
     workspace.claim()
@@ -594,19 +686,38 @@ def command_run(workspace, binary=None, extra_args=(), dry_run=False):
 
 def command_package(workspace, lock_path):
     lock = load_json(lock_path, "lock file")
-    mach = require_mach(workspace, "run fetch, apply and build first")
-    if not (workspace.obj / "dist" / "bin" / APP_NAME).is_file():
+    require_mach(workspace, "run fetch, apply and build first")
+    expected_bin = workspace.obj / "dist" / "bin" / platform_compat.binary_name(APP_NAME)
+    if not expected_bin.is_file():
         raise BuildError("No full Argon build to package; artifact builds are not distributable")
     mozconfig = write_mozconfig(workspace, lock)
-    command = [str(mach), "package"]
+    command = mach_command(workspace, "run fetch, apply and build first", "package")
     completed = subprocess.run(command, cwd=workspace.source, env=mach_env(mozconfig), check=False)
     dist = workspace.obj / "dist"
-    archives = sorted(
-        str(p) for p in dist.glob(f"{APP_NAME}-*")
-        if p.is_file() and any(p.name.endswith(ext) for ext in (".tar.xz", ".tar.bz2", ".tar.zst", ".tar.gz"))
-    ) if dist.is_dir() else []
-    return {"command": command, "output_dir": str(dist), "archives": archives,
-            "exit_code": completed.returncode, "succeeded": completed.returncode == 0}
+    archive_exts = (".tar.xz", ".tar.bz2", ".tar.zst", ".tar.gz", ".zip")
+    archives = []
+    if dist.is_dir():
+        archives.extend(
+            str(p) for p in sorted(dist.glob(f"{APP_NAME}-*"))
+            if p.is_file() and (p.name.endswith(archive_exts) or p.name.endswith(".installer.exe"))
+        )
+        sea_dir = dist / "install" / "sea"
+        if sea_dir.is_dir():
+            archives.extend(
+                str(p) for p in sorted(sea_dir.glob(f"{APP_NAME}-*.installer.exe"))
+                if p.is_file()
+            )
+    setup_exe = workspace.obj / "browser" / "installer" / "windows" / "instgen" / "setup.exe"
+    report = {
+        "command": command,
+        "output_dir": str(dist),
+        "archives": sorted(dict.fromkeys(archives)),
+        "exit_code": completed.returncode,
+        "succeeded": completed.returncode == 0,
+    }
+    if setup_exe.is_file():
+        report["setup_exe"] = str(setup_exe)
+    return report
 
 
 def default_flatpak_output(archive_path):
@@ -684,11 +795,13 @@ def _link_or_copy(src, dst):
 def command_stage_runtime(workspace, runtime=None, output=None):
     """Stage a runnable Argon runtime with settings/librewolf.cfg and policies without mutating dist/bin."""
     source_dir = no_symlinks(runtime) if runtime is not None else (workspace.obj / "dist" / "bin")
-    binary = source_dir / APP_NAME
+    binary = source_dir / platform_compat.binary_name(APP_NAME)
+    if not binary.is_file() and (source_dir / APP_NAME).is_file():
+        binary = source_dir / APP_NAME
     app_ini = source_dir / "application.ini"
     if not source_dir.is_dir() or not binary.is_file() or not app_ini.is_file():
         raise BuildError(
-            f"No full Argon runtime at {source_dir}; run `python3 scripts/argon.py build` first"
+            f"No full Argon runtime at {source_dir}; run `argon.py build` first"
         )
     read_application_ini(app_ini)
 
@@ -696,14 +809,14 @@ def command_stage_runtime(workspace, runtime=None, output=None):
     if dest_dir == source_dir.resolve():
         raise BuildError("Staged runtime output must not overwrite the source runtime directory")
     if dest_dir.exists():
-        shutil.rmtree(dest_dir)
+        platform_compat.rmtree_retry(dest_dir)
 
     shutil.copytree(source_dir, dest_dir, symlinks=False, copy_function=_link_or_copy)
     installed = install_runtime_settings(dest_dir)
     return {
         "source": str(source_dir),
         "runtime": str(dest_dir),
-        "binary": str(dest_dir / APP_NAME),
+        "binary": str(dest_dir / binary.name),
         "installed_settings": installed,
         "exit_code": 0,
         "succeeded": True,
@@ -1288,21 +1401,60 @@ flatpak run {FLATPAK_APP_ID}</code></pre>
 
 
 def memory_gib():
+    return platform_compat.memory_gib()
+
+
+def _load_win_package():
     try:
-        with open("/proc/meminfo") as handle:
-            for line in handle:
-                if line.startswith("MemTotal:"):
-                    return round(int(line.split()[1]) / 1024 / 1024, 2)
-    except OSError:
-        pass
-    return None
+        import win_package
+        return win_package
+    except ImportError as exc:
+        raise BuildError(f"Windows packaging module scripts/win_package.py is unavailable: {exc}") from None
+
+
+def command_win_portable(workspace, **kwargs):
+    win_package = _load_win_package()
+    try:
+        return win_package.command_win_portable(workspace, **kwargs)
+    except win_package.WinPackageError as exc:
+        raise BuildError(str(exc)) from None
+
+
+def command_win_installer(workspace, **kwargs):
+    win_package = _load_win_package()
+    try:
+        return win_package.command_win_installer(workspace, **kwargs)
+    except win_package.WinPackageError as exc:
+        raise BuildError(str(exc)) from None
+
+
+def command_verify_windows(workspace, **kwargs):
+    win_package = _load_win_package()
+    try:
+        return win_package.command_verify_windows(workspace, **kwargs)
+    except win_package.WinPackageError as exc:
+        raise BuildError(str(exc)) from None
 
 
 def command_doctor(workspace, lock_path, overlay_path, artifact=False):
     vcs = detect_vcs(workspace.source) if workspace.source.is_dir() else None
-    tools = {name: shutil.which(name) for name in
-             ["python3", "node", "git", "make", "clang", "rustc", "cargo", "cbindgen"]}
+    is_win = platform_compat.is_windows()
+    tool_names = ["node", "git", "make", "clang", "rustc", "cargo", "cbindgen"]
+    if is_win:
+        tool_names.extend(["clang-cl", "lld-link", "makensis", "sh"])
+    tools = {"python3": platform_compat.find_python(include_current=True)}
+    for name in tool_names:
+        tools[name] = shutil.which(platform_compat.binary_name(name)) or shutil.which(name)
     mozbuild = Path(os.environ.get("MOZBUILD_STATE_PATH") or Path.home() / ".mozbuild")
+    mb_version = None
+    if is_win:
+        mb = platform_compat.find_mozilla_build()
+        tools["mozillabuild"] = str(mb) if mb else None
+        mb_version = platform_compat.mozilla_build_version(mb)
+        vswhere = platform_compat.find_vswhere()
+        tools["vswhere"] = str(vswhere) if vswhere else None
+        redist = platform_compat.find_windows_redist_dir(mozbuild)
+        tools["msvc_redist_dir"] = str(redist) if redist else None
     memory = memory_gib()
     probe = workspace.path if workspace.path.exists() else workspace.path.parent
     while not probe.exists():
@@ -1310,8 +1462,14 @@ def command_doctor(workspace, lock_path, overlay_path, artifact=False):
     free_gib = round(shutil.disk_usage(probe).free / 1024 ** 3, 1)
 
     warnings = []
+    if is_win and platform_compat.only_windows_store_python_on_path() and not os.environ.get("ARGON_PYTHON"):
+        warnings.append(
+            "PATH resolves python/python3 only to Microsoft Store WindowsApps aliases; "
+            "install Python 3.12+ or MozillaBuild or set ARGON_PYTHON."
+        )
     if artifact:
-        warnings.append("Artifact builds keep Firefox's native identity (dist/bin/firefox); "
+        artifact_bin = platform_compat.binary_name("firefox")
+        warnings.append(f"Artifact builds keep Firefox's native identity (dist/bin/{artifact_bin}); "
                         "use a full build for a distributable Argon.")
         if workspace.source.is_dir() and vcs is None:
             warnings.append(
@@ -1320,16 +1478,48 @@ def command_doctor(workspace, lock_path, overlay_path, artifact=False):
                 "Git artifact builds require a git-cinnabar clone."
             )
     else:
-        if not (tools["clang"] and tools["rustc"]) and not mozbuild.is_dir():
+        has_compiler = bool(tools["clang"] or tools.get("clang-cl")) and bool(tools["rustc"])
+        if not has_compiler and not mozbuild.is_dir():
             warnings.append("No clang/rustc and no ~/.mozbuild toolchains: run "
-                            "`python3 scripts/argon.py bootstrap` before building.")
+                            "`node scripts/run-python.mjs scripts/argon.py bootstrap` before building.")
+        if is_win:
+            if not tools.get("mozillabuild"):
+                warnings.append(
+                    "MozillaBuild >= 4.0 was not detected at %MOZILLABUILD% or C:\\mozilla-build; "
+                    "MozillaBuild is required on Windows to run ./mach bootstrap, configure, and build."
+                )
+            elif mb_version:
+                try:
+                    major = int(mb_version.split(".", 1)[0])
+                    if major < 4:
+                        warnings.append(f"MozillaBuild {mb_version} detected; upstream requires MozillaBuild >= 4.0.")
+                except ValueError:
+                    pass
+            has_vs = (
+                (mozbuild / "vs").is_dir()
+                or bool(os.environ.get("VC_PATH"))
+                or bool(os.environ.get("WINDOWSSDKDIR"))
+                or bool(os.environ.get("VSINSTALLDIR"))
+            )
+            if not has_vs:
+                warnings.append(
+                    "No bootstrapped .mozbuild/vs or active VS 2022+/Windows 10 SDK environment detected; "
+                    "run `bootstrap` or install VS 2022+ (MSVC ATL/MFC + Windows 10/11 SDK)."
+                )
         if memory is not None and memory < 8:
             warnings.append(f"{memory} GiB RAM: Mozilla recommends 8 GB or more for a full "
                             "build. Use --jobs 1, add swap, or build on CI.")
         if free_gib < 40:
             warnings.append(f"{free_gib} GiB free at the workspace: a full build needs about 40 GB.")
+        if is_win and len(str(workspace.path)) > 80:
+            warnings.append(
+                f"Workspace path is {len(str(workspace.path))} chars; prefer a shorter path like "
+                "C:\\argon-build on Windows to avoid MAX_PATH issues in the Gecko objdir."
+            )
 
-    return {
+    active_mozconfig = default_mozconfig()
+    report = {
+        "platform": sys.platform,
         "build_mode": "artifact" if artifact else "source",
         "native_identity_rebranded": not artifact,
         "app_name": None if artifact else APP_NAME,
@@ -1337,7 +1527,8 @@ def command_doctor(workspace, lock_path, overlay_path, artifact=False):
         "lock": str(lock_path),
         "lock_present": Path(lock_path).is_file(),
         "overlay_present": Path(overlay_path).is_file(),
-        "mozconfig_present": MOZCONFIG.is_file(),
+        "mozconfig": str(active_mozconfig),
+        "mozconfig_present": active_mozconfig.is_file(),
         "source_present": workspace.source.is_dir(),
         "source_vcs": vcs,
         "memory_gib": memory,
@@ -1346,20 +1537,24 @@ def command_doctor(workspace, lock_path, overlay_path, artifact=False):
         "tools": tools,
         "warnings": warnings,
     }
-
-
-def _extract_flag(extra, name):
-    if name in extra and extra.index(name) + 1 < len(extra):
-        idx = extra.index(name)
-        return Path(extra[idx + 1])
-    return None
+    if is_win and mb_version:
+        report["mozillabuild_version"] = mb_version
+    return report
 
 
 def _extract_str_flag(extra, name):
-    if name in extra and extra.index(name) + 1 < len(extra):
-        idx = extra.index(name)
-        return extra[idx + 1]
+    prefix = f"{name}="
+    for idx, item in enumerate(extra):
+        if item.startswith(prefix):
+            return item.split("=", 1)[1]
+        if item == name and idx + 1 < len(extra):
+            return extra[idx + 1]
     return None
+
+
+def _extract_flag(extra, name):
+    val = _extract_str_flag(extra, name)
+    return Path(val) if val is not None else None
 
 
 def _extract_multi_flag(extra, name):
@@ -1390,11 +1585,11 @@ def main(argv=None):
     parser.add_argument("--binary", help="run: browser binary to launch instead of the build")
     parser.add_argument("--dry-run", action="store_true", help="run: print the command only")
     parser.add_argument("--archive", type=Path, default=None,
-                        help="flatpak: packaged argon-*.tar.* archive to bundle")
+                        help="flatpak / win-portable / win-installer: packaged argon archive to bundle")
     parser.add_argument("--runtime", type=Path, default=None,
-                        help="flatpak: synchronized Argon runtime directory to bundle")
+                        help="flatpak / stage-runtime / win-portable / win-installer: Argon runtime directory")
     parser.add_argument("--output", type=Path, default=None,
-                        help="flatpak / flatpak-repo: output .flatpak bundle or pages directory")
+                        help="flatpak / flatpak-repo / stage-runtime / win-*: output bundle or directory")
     parser.add_argument("--bundle", type=Path, action="append", default=None,
                         help="verify-flatpak / flatpak-repo: .flatpak bundle path(s)")
     parser.add_argument("--repo-url", default=None,
@@ -1407,9 +1602,26 @@ def main(argv=None):
                         help="flatpak: GPG key ID to sign the OSTree commit and bundle")
     parser.add_argument("--gpg-homedir", type=Path, default=None,
                         help="flatpak: GPG homedir for signing keys")
+    parser.add_argument("--launcher-exe", type=Path, default=None,
+                        help="win-portable: prebuilt portable launcher executable")
+    parser.add_argument("--launcher-backend", default=None,
+                        help="win-portable: launcher build backend (auto, zig, mingw, cl)")
+    parser.add_argument("--makensis", type=Path, default=None,
+                        help="win-installer: path to makensis executable")
+    parser.add_argument("--portable", type=Path, default=None,
+                        help="verify-windows: portable ZIP path to verify")
+    parser.add_argument("--installer", type=Path, default=None,
+                        help="verify-windows: NSIS installer executable path to verify")
+    parser.add_argument("--checksums", type=Path, default=None,
+                        help="verify-windows: SHA256SUMS file path to verify")
+    parser.add_argument("--no-checksums", action="store_true",
+                        help="win-portable / win-installer: skip writing SHA256SUMS")
+    parser.add_argument("--run-portable-smoke", action="store_true",
+                        help="verify-windows: execute portable launcher smoke verification")
     parser.add_argument("command", choices=["doctor", "fetch", "apply", "bootstrap", "build",
                                             "run", "package", "stage-runtime", "flatpak",
-                                            "flatpak-repo", "verify-flatpak"])
+                                            "flatpak-repo", "verify-flatpak",
+                                            "win-portable", "win-installer", "verify-windows"])
     parser.add_argument("extra", nargs=argparse.REMAINDER,
                         help="run: arguments passed through to the browser")
     args = parser.parse_args(argv)
@@ -1465,6 +1677,53 @@ def main(argv=None):
             bundle = _extract_flag(extra, "--bundle") or (args.bundle[0] if args.bundle else None)
             require_full_omni = args.require_full_omni or "--require-full-omni" in extra
             report = command_verify_flatpak(workspace, bundle=bundle, require_full_omni=require_full_omni)
+        elif args.command == "win-portable":
+            extra = list(args.extra)
+            archive = _extract_flag(extra, "--archive") or args.archive
+            output = _extract_flag(extra, "--output") or args.output
+            runtime = _extract_flag(extra, "--runtime") or args.runtime
+            launcher_exe = _extract_flag(extra, "--launcher-exe") or args.launcher_exe
+            launcher_backend = _extract_str_flag(extra, "--launcher-backend") or args.launcher_backend or "auto"
+            write_checksums = not (args.no_checksums or "--no-checksums" in extra)
+            report = command_win_portable(
+                workspace,
+                archive=archive,
+                output=output,
+                runtime=runtime,
+                launcher_exe=launcher_exe,
+                launcher_backend=launcher_backend,
+                write_checksums=write_checksums,
+            )
+        elif args.command == "win-installer":
+            extra = list(args.extra)
+            archive = _extract_flag(extra, "--archive") or args.archive
+            output = _extract_flag(extra, "--output") or args.output
+            runtime = _extract_flag(extra, "--runtime") or args.runtime
+            makensis = _extract_flag(extra, "--makensis") or args.makensis
+            write_checksums = not (args.no_checksums or "--no-checksums" in extra)
+            report = command_win_installer(
+                workspace,
+                archive=archive,
+                output=output,
+                runtime=runtime,
+                makensis=makensis,
+                write_checksums=write_checksums,
+            )
+        elif args.command == "verify-windows":
+            extra = list(args.extra)
+            portable = _extract_flag(extra, "--portable") or args.portable
+            installer = _extract_flag(extra, "--installer") or args.installer
+            checksums = _extract_flag(extra, "--checksums") or args.checksums
+            require_full_omni = args.require_full_omni or "--require-full-omni" in extra
+            run_portable_smoke = args.run_portable_smoke or "--run-portable-smoke" in extra
+            report = command_verify_windows(
+                workspace,
+                portable=portable,
+                installer=installer,
+                checksums=checksums,
+                require_full_omni=require_full_omni,
+                run_portable_smoke=run_portable_smoke,
+            )
         else:
             # Accept run's own flags after the command too (`run --dry-run`);
             # everything after `--` goes to the browser untouched.

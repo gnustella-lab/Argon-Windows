@@ -3,9 +3,10 @@
 import datetime
 import hashlib
 import json
-from pathlib import Path
-import subprocess
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,10 @@ def build_batch_items(enabled):
     return items, meta_by_id
 
 
+def _node_cmd():
+    return shutil.which('node') or 'node'
+
+
 def download(item):
     """Resolve and format a single enabled list entry using fallback HTTPS URLs."""
     key, entry = item
@@ -50,14 +55,16 @@ def download(item):
     if not https_urls:
         raise ValueError(f'No HTTPS URLs configured for list {key}')
     resolver = str(ROOT / 'scripts/resolve-native-adblock-list.mjs')
+    node = _node_cmd()
     last_error = None
     for url in https_urls:
         try:
             completed = subprocess.run(
-                ['node', resolver, url],
+                [node, resolver, url],
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
                 timeout=120,
             )
             return _build_result(key, entry, https_urls, url, json.loads(completed.stdout))
@@ -69,11 +76,12 @@ def download(item):
 def download_batch(enabled):
     items, meta_by_id = build_batch_items(enabled)
     completed = subprocess.run(
-        ['node', str(ROOT / 'scripts/resolve-native-adblock-list.mjs'), '--batch'],
+        [_node_cmd(), str(ROOT / 'scripts/resolve-native-adblock-list.mjs'), '--batch'],
         input=json.dumps(items),
         check=True,
         capture_output=True,
         text=True,
+        encoding='utf-8',
         timeout=300,
     )
     resolved_items = json.loads(completed.stdout)
@@ -83,6 +91,7 @@ def download_batch(enabled):
         entry, https_urls = meta_by_id[key]
         results.append(_build_result(key, entry, https_urls, item['url'], item['resolved']))
     return results
+
 
 def publish(destination, results, manifest):
     """Stage everything before touching the checkout; roll back I/O failures.
@@ -117,8 +126,9 @@ def publish(destination, results, manifest):
                     target.write_bytes(previous[relative])
             raise
 
+
 def main():
-    catalog = json.loads((ROOT / 'assets/uBOAssets.json').read_text())
+    catalog = json.loads((ROOT / 'assets/uBOAssets.json').read_text(encoding='utf-8'))
     enabled = [(key, entry) for key, entry in catalog.items()
                if entry.get('content') == 'filters' and not entry.get('off', False)]
     results = download_batch(enabled)
@@ -130,6 +140,7 @@ def main():
         'lists': [entry for entry, _ in results]}, indent=2) + '\n').encode('utf-8')
     publish(destination, results, manifest)
     print(f'Snapshotted {len(results)} enabled filter lists.')
+
 
 if __name__ == '__main__':
     main()

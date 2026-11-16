@@ -3694,7 +3694,8 @@ export function applyToDOM(root = null, locale = null, context = null) {
 def main():
     """Generate argon/i18n.mjs and print summary statistics."""
     print(f"Generated complete translations for {len(TRANSLATIONS)} locales.")
-    OUT_FILE.write_text(generate_js(), encoding="utf-8")
+    with open(OUT_FILE, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(generate_js())
     print(f"Successfully generated {OUT_FILE} ({OUT_FILE.stat().st_size} bytes)")
 
 

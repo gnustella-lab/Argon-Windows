@@ -4,7 +4,6 @@
 import argparse
 import configparser
 import hashlib
-import importlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -18,6 +17,12 @@ import tempfile
 import time
 import zipfile
 import zlib
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import platform_compat
 
 REPO = Path(__file__).resolve().parents[1]
 WINDOW = "chrome/browser/content/browser/browser.xhtml"
@@ -65,7 +70,7 @@ def prepare_runtime(binary, workspace):
     """Copy the engine once, without hardlinks or symlinks back to its source."""
     binary = Path(binary).resolve()
     workspace = Path(workspace).absolute()
-    if any(path.is_symlink() for path in (workspace, *workspace.parents)):
+    if any(platform_compat.is_symlink_or_junction(path) for path in (workspace, *workspace.parents)):
         raise DevError("The development workspace must not use symlinked directories")
     base = binary.parent
     if base.is_relative_to(workspace) or workspace.is_relative_to(base):
@@ -84,20 +89,22 @@ def prepare_runtime(binary, workspace):
     workspace.mkdir(parents=True, exist_ok=True)
     runtime = workspace / "runtime"
     state = workspace / "engine.json"
-    if runtime.is_symlink() or state.is_symlink():
+    if platform_compat.is_symlink_or_junction(runtime) or platform_compat.is_symlink_or_junction(state):
         raise DevError("The private runtime must not be a symlink")
-    if state.is_file() and json.loads(state.read_text()) == identity and (runtime / binary.name).is_file():
+    if (state.is_file()
+            and json.loads(state.read_text(encoding="utf-8")) == identity
+            and (runtime / binary.name).is_file()):
         return runtime
     staging = Path(tempfile.mkdtemp(prefix=".engine-", dir=workspace))
     try:
         shutil.copytree(base, staging, dirs_exist_ok=True, symlinks=False)
         if runtime.exists():
-            shutil.rmtree(runtime)
-        staging.replace(runtime)
-        state.write_text(json.dumps(identity, indent=2) + "\n")
+            platform_compat.rmtree_retry(runtime)
+        platform_compat.replace_path(staging, runtime)
+        platform_compat.write_text_lf(state, json.dumps(identity, indent=2) + "\n")
     finally:
         if staging.exists():
-            shutil.rmtree(staging)
+            platform_compat.rmtree_retry(staging)
     return runtime
 
 
@@ -105,25 +112,31 @@ class DevLock:
     """An OS-released lock prevents two watchers from sharing one profile."""
     def __init__(self, workspace):
         self.workspace = Path(workspace).absolute()
+        self.handle = None
 
     def __enter__(self):
-        if any(path.is_symlink() for path in (self.workspace, *self.workspace.parents)):
+        if any(platform_compat.is_symlink_or_junction(path) for path in (self.workspace, *self.workspace.parents)):
             raise DevError("The development workspace must not use symlinked directories")
         self.workspace.mkdir(parents=True, exist_ok=True)
         lock = self.workspace / "dev.lock"
-        if lock.is_symlink():
+        if platform_compat.is_symlink_or_junction(lock):
             raise DevError("The development lock must not be a symlink")
         self.handle = lock.open("a+b")
         try:
-            locker = importlib.import_module("fcntl")
-            locker.flock(self.handle.fileno(), locker.LOCK_EX | locker.LOCK_NB)
+            platform_compat.acquire_file_lock(self.handle)
         except OSError as error:
             self.handle.close()
+            self.handle = None
             raise DevError("Another npm run dev is already using this workspace") from error
         return self
 
     def __exit__(self, *_):
-        self.handle.close()
+        if self.handle is not None:
+            try:
+                platform_compat.release_file_lock(self.handle)
+            finally:
+                self.handle.close()
+                self.handle = None
 
 
 def read_overlay(repo):
@@ -235,6 +248,14 @@ def _collect_resource_updates(repo):
     defaults_bytes, defaults_digest = _read_cached_file(defaults_path)
     updates[DEFAULTS] = defaults_bytes
     digests[DEFAULTS] = defaults_digest
+    if platform_compat.is_windows():
+        win_dll = repo_root / "argon/adblock/argon_adblock.dll"
+        if win_dll.is_file():
+            dll_target = "chrome/browser/content/browser/argon/adblock/argon_adblock.dll"
+            if dll_target not in updates:
+                dll_bytes, dll_digest = _read_cached_file(win_dll)
+                updates[dll_target] = dll_bytes
+                digests[dll_target] = dll_digest
     return updates, digests
 
 
@@ -495,7 +516,8 @@ def sync_resources(repo, base, runtime):
     destination = runtime_path / "browser/omni.ja"
     sync_state_file = destination.with_name(".omni-sync.json")
     if (base_path.resolve() == runtime_path.resolve()
-            or any(path.is_symlink() for path in (destination, destination.parent, runtime_path, sync_state_file))):
+            or any(platform_compat.is_symlink_or_junction(path)
+                   for path in (destination, destination.parent, runtime_path, sync_state_file))):
         raise DevError("Refusing to overwrite the prebuilt application")
 
     base_sig = list(_stat_sig(base_archive))
@@ -568,8 +590,8 @@ def sync_resources(repo, base, runtime):
                             output.writestr(info, data)
                         for name, data in remaining.items():
                             output.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
-            temporary.replace(destination)
-            sync_state_file.write_text(json.dumps({
+            platform_compat.replace_path(temporary, destination)
+            platform_compat.write_text_lf(sync_state_file, json.dumps({
                 "base_sig": base_sig,
                 "dest_sig": list(_stat_sig(destination)),
                 "overlay_sig": overlay_sig,
@@ -587,7 +609,7 @@ def sync_resources(repo, base, runtime):
         src_file = repo_path / src_rel
         if src_file.is_file():
             dst_file = runtime_path / dst_rel
-            if any(p.is_symlink() for p in (dst_file, dst_file.parent)):
+            if any(platform_compat.is_symlink_or_junction(p) for p in (dst_file, dst_file.parent)):
                 raise DevError("Refusing to write through a symlink in runtime")
             if dst_file.is_file():
                 _, src_digest = _read_cached_file(src_file)
@@ -602,22 +624,30 @@ def find_binary(repo, supplied=None):
     explicit = supplied or os.environ.get("ARGON_DEV_BINARY")
     if explicit:
         binary = Path(explicit).expanduser().resolve()
+        if not binary.is_file() and platform_compat.is_windows() and not binary.suffix:
+            exe_candidate = binary.with_suffix(".exe")
+            if exe_candidate.is_file():
+                binary = exe_candidate
         if not binary.is_file():
             raise DevError(f"Prebuilt Argon binary does not exist: {binary}")
         return binary
-    for relative in ("artifacts/layout-fix/argon/argon", ".cache/prebuilt/argon/argon"):
+    bin_name = platform_compat.binary_name("argon")
+    for relative in (
+        f"artifacts/layout-fix/argon/{bin_name}",
+        f".cache/prebuilt/argon/{bin_name}",
+    ):
         local = repo / relative
         if local.is_file():
             return local.resolve()
-    if shutil.which("flatpak"):
+    if not platform_compat.is_windows() and shutil.which("flatpak"):
         result = subprocess.run(["flatpak", "info", "--show-location", "io.github.argon_browser.Argon"],
                                 capture_output=True, text=True, timeout=10, check=False)
         if result.returncode == 0:
             installed = Path(result.stdout.strip()) / "files/lib/argon/argon"
             if installed.is_file():
                 return installed.resolve()
-    raise DevError("No prebuilt Argon found. Extract an Actions artifact and pass "
-                   "--binary /path/to/argon, or set ARGON_DEV_BINARY. Nothing was compiled or downloaded.")
+    raise DevError(f"No prebuilt Argon found. Extract an Actions artifact and pass "
+                   f"--binary /path/to/{bin_name}, or set ARGON_DEV_BINARY. Nothing was compiled or downloaded.")
 
 
 def stop_browser(browser):
@@ -652,10 +682,10 @@ def run_dev(repo, binary, watch=True, sync_only=False, arguments=(), reset_profi
         sync_resources(repo, binary.parent, runtime)
         print(f"[argon dev] Frontend synchronized: {runtime}", flush=True)
         profile = workspace / "profile"
-        if profile.is_symlink():
+        if platform_compat.is_symlink_or_junction(profile):
             raise DevError("The development profile must not be a symlink")
         if reset_profile and profile.exists():
-            shutil.rmtree(profile)
+            platform_compat.rmtree_retry(profile)
             print(f"[argon dev] Reset development profile: {profile}", flush=True)
         profile.mkdir(exist_ok=True)
         if sync_only:

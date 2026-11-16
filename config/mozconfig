@@ -37,8 +37,8 @@ export MOZ_APP_REMOTINGNAME=argon
 #
 # MOZ_APP_ID intentionally stays Firefox's: WebExtensions on addons.mozilla.org
 # declare compatibility against it, and keeping it is what lets Argon install
-# AMO add-ons natively. MOZ_APP_UA_NAME is left empty so the User-Agent string
-# stays Firefox-compatible and sites do not break on an unknown product token.
+# AMO add-ons natively. MOZ_APP_UA_NAME is implied to "Firefox" via
+# browser/moz.configure (when configured) so User-Agent sniffing stays compatible.
 
 # ---------------------------------------------------------------------------
 # Mozilla release infrastructure Argon does not have (yet)

@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: MPL-2.0
+# Argon Windows build configuration: an independent browser built from Firefox source.
+#
+# scripts/argon.py copies this file into the build workspace on Windows,
+# appends any detected MSVC CRT redistributable dir (--with-redist=...) when
+# available, and appends MOZ_OBJDIR with forward slashes for MozillaBuild sh.
+# Every option below was verified against the pinned upstream revision
+# (config/firefox.lock.json) in build/moz.configure/ and toolkit/moz.configure.
+
+ac_add_options --enable-application=browser
+
+# Automatically download and use Mozilla's pre-built compiler/sysroot/VS
+# toolchains in ~/.mozbuild even when building from a source tarball without
+# VCS metadata (where bootstrap_default is otherwise off).
+ac_add_options --enable-bootstrap
+
+# ---------------------------------------------------------------------------
+# Application identity
+# ---------------------------------------------------------------------------
+# Binary name (dist/bin/argon.exe), package names, and remoting default.
+ac_add_options --with-app-name=argon
+# application.ini "Name" field and Windows system integration hooks.
+ac_add_options --with-app-basename=Argon
+# Brand strings, .ico/.bmp/.VisualElements assets, and branding prefs.
+ac_add_options --with-branding=browser/branding/argon
+# Distribution identifier.
+ac_add_options --with-distribution-id=io.github.argon_browser.Argon
+
+# Remoting name so a running Firefox and a running Argon stay isolated.
+export MOZ_APP_REMOTINGNAME=argon
+# MOZ_APP_VENDOR and MOZ_APP_PROFILE are declared with project_flag() in
+# toolkit/moz.configure (possible_origins=("implied",)), so they cannot be set
+# from the environment or mozconfig; they are set via imply_option() by the
+# browser/moz.configure hook in config/overlay.json.
+#
+# MOZ_APP_ID intentionally stays Firefox's so AMO add-ons remain installable.
+
+# ---------------------------------------------------------------------------
+# Mozilla release infrastructure & Windows background services Argon omits
+# ---------------------------------------------------------------------------
+# Disables updater, Mozilla Maintenance Service, and update agent.
+ac_add_options --disable-updater
+# No crash-stats server for Argon builds.
+ac_add_options --disable-crashreporter
+# Disable Windows Default Browser Agent (prevents building
+# default-browser-agent.exe and registering its scheduled task).
+ac_add_options --disable-default-browser-agent
+# Disable Windows toast notification COM server and closed-app push/background
+# task helpers (normal in-browser notifications remain functional).
+ac_add_options --disable-notification-server
+ac_add_options --disable-push-notification-helper
+ac_add_options --disable-backgroundtasks
+# MOZ_TELEMETRY_REPORTING is not set: telemetry upload is compiled out unless
+# a build sets it explicitly. MOZILLA_OFFICIAL is not set either; it would
+# enable Mozilla-only official build behaviour.
+#
+# Note: bare `--with-redist` fails configure if Redist/MSVC is absent (e.g.
+# minimal Build Tools or bootstrapped .mozbuild/vs), so scripts/argon.py appends
+# `--with-redist=<dir>` dynamically only when a CRT directory is detected.
+# MOZ_NO_DEBUG_RTL is auto-enabled by build/moz.configure/flags.configure.
+
+# ---------------------------------------------------------------------------
+# Build flavour
+# ---------------------------------------------------------------------------
+ac_add_options --enable-optimize
+ac_add_options --enable-release
+ac_add_options --enable-rust-simd
+ac_add_options --disable-debug
+ac_add_options --disable-tests

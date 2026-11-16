@@ -1,27 +1,37 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+"""Apply LibreWolf & Argon patches, l10n updates, settings, branding, and overlay."""
 
 import datetime
 import json
 import os
 import pathlib
+import re
 import shutil
+import subprocess
 import sys
 
-start_time = datetime.datetime.now()
+_SCRIPTS_DIR = str(pathlib.Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import platform_compat
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-
-#
-# Helper functions
-#
 
 def mkdirp(path):
     os.makedirs(path, exist_ok=True)
 
 
 def cp(src, dst):
-    shutil.copy(src, dst)
+    dst_path = pathlib.Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst_path)
+
+
+def cptree(src, dst):
+    shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
 def rm(path):
@@ -31,57 +41,121 @@ def rm(path):
 
 def rmdir(path):
     if os.path.exists(path):
-        shutil.rmtree(path)
+        platform_compat.rmtree_retry(pathlib.Path(path))
 
 
-def exec(cmd):
-    if cmd != "":
-        print("-> {}".format(cmd))
-        retval = os.system(cmd)
-        if retval != 0:
-            print("fatal error: command '{}' failed (retval={})".format(cmd, retval))
-            sys.exit(1)
+def append_file(src_rel, dst_rel):
+    src = pathlib.Path(src_rel)
+    dst = pathlib.Path(dst_rel)
+    if not src.is_file():
+        print(f"fatal error: missing l10n append source '{src}'", file=sys.stderr)
+        sys.exit(1)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    chunk = src.read_text(encoding="utf-8")
+    existing = dst.read_text(encoding="utf-8") if dst.is_file() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    platform_compat.write_text_lf(dst, existing + chunk)
+
+
+def append_lines(dst_rel, lines):
+    dst = pathlib.Path(dst_rel)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    existing = dst.read_text(encoding="utf-8") if dst.is_file() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    platform_compat.write_text_lf(dst, existing + "\n".join(lines) + "\n")
+
+
+def replace_text_in_file(dst_rel, old, new):
+    dst = pathlib.Path(dst_rel)
+    if not dst.is_file():
+        print(f"fatal error: missing replacement target '{dst}'", file=sys.stderr)
+        sys.exit(1)
+    text = dst.read_text(encoding="utf-8")
+    platform_compat.write_text_lf(dst, text.replace(old, new))
+
+
+def _find_patch_tool():
+    """Find GNU patch or fall back to git apply (works on Windows without MSYS patch)."""
+    patch_bin = shutil.which(platform_compat.binary_name("patch")) or shutil.which("patch")
+    if patch_bin:
+        return ("patch", patch_bin)
+    if platform_compat.is_windows():
+        git_bin = shutil.which("git.exe") or shutil.which("git")
+        if git_bin:
+            git_patch = pathlib.Path(git_bin).resolve().parents[1] / "usr" / "bin" / "patch.exe"
+            if git_patch.is_file():
+                return ("patch", str(git_patch))
+        mb = platform_compat.find_mozilla_build()
+        if mb:
+            mb_patch = mb / "msys2" / "usr" / "bin" / "patch.exe"
+            if mb_patch.is_file():
+                return ("patch", str(mb_patch))
+    git_bin = shutil.which(platform_compat.binary_name("git")) or shutil.which("git")
+    if git_bin:
+        return ("git", git_bin)
+    return None
+
+
+def _current_platform_tags():
+    if platform_compat.is_windows():
+        return {"windows", "win32", "win"}
+    if platform_compat.is_macos():
+        return {"macos", "darwin", "osx", "unix", "posix"}
+    return {"linux", "unix", "posix"}
+
+
+def parse_patch_entry(raw_line):
+    """Parse an assets/patches.txt line, supporting optional `[platform]` tags.
+
+    Plain lines (`patches/foo.patch`) apply on every platform.
+    Comments (`# ...`) and blank lines return None.
+    Optional inline tags (`patches/foo.patch [linux]` or `[linux] patches/foo.patch`)
+    apply only when the current host matches one of the comma-separated tags.
+    """
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+    line_no_comment = line.split(" #", 1)[0].strip()
+    if not line_no_comment:
+        return None
+    tag_match = re.match(r"^\[([A-Za-z0-9_,-]+)\]\s+(.+)$", line_no_comment)
+    if tag_match:
+        tags = {t.strip().lower() for t in tag_match.group(1).split(",") if t.strip()}
+        patch_path = tag_match.group(2).strip()
+    else:
+        trail_match = re.match(r"^(.+?)\s+\[([A-Za-z0-9_,-]+)\]$", line_no_comment)
+        if trail_match:
+            patch_path = trail_match.group(1).strip()
+            tags = {t.strip().lower() for t in trail_match.group(2).split(",") if t.strip()}
+        else:
+            patch_path = line_no_comment
+            tags = None
+
+    if tags is not None and not (tags & _current_platform_tags()):
+        return None
+    return patch_path
 
 
 def patch(patchfile):
-    cmd = "patch -p1 -i ../{}".format(patchfile)
-    print("\n*** -> {}".format(cmd))
-    retval = os.system(cmd)
-    if retval != 0:
-        print("fatal error: patch '{}' failed".format(patchfile))
+    patch_path = pathlib.Path("..") / patchfile
+    if not patch_path.is_file():
+        patch_path = REPO_ROOT / patchfile
+    tool = _find_patch_tool()
+    if tool is None:
+        print("fatal error: neither 'patch' nor 'git' was found on PATH", file=sys.stderr)
         sys.exit(1)
-
-
-#
-# Process CLI arguments
-#
-
-args = sys.argv[1:]
-no_execute = False
-create_mozconfig = True
-while len(args) > 0:
-    if args[0] == "--no-execute":
-        no_execute = True
-        args.pop(0)
-    elif args[0] == "--no-mozconfig":
-        create_mozconfig = False
-        args.pop(0)
+    kind, binary = tool
+    if kind == "patch":
+        cmd = [binary, "-p1", "-i", str(patch_path)]
     else:
-        break
-
-if len(args) != 2:
-    sys.stderr.write("error: please specify version and release of Argon source\n")
-    sys.exit(1)
-
-version = args[0]
-release = args[1]
-
-srcdir = "argon-{}-{}".format(version, release)
-if not os.path.exists(srcdir + "/configure.py") and os.path.exists("librewolf-{}-{}/configure.py".format(version, release)):
-    srcdir = "librewolf-{}-{}".format(version, release)
-if not os.path.exists(srcdir + "/configure.py"):
-    print("fatal error: '{}' directory not found.".format(srcdir))
-    sys.exit(1)
+        cmd = [binary, "apply", "--whitespace=nowarn", "-p1", str(patch_path)]
+    print(f"\n*** -> {' '.join(cmd)}")
+    completed = subprocess.run(cmd, check=False)
+    if completed.returncode != 0:
+        print(f"fatal error: patch '{patchfile}' failed", file=sys.stderr)
+        sys.exit(1)
 
 
 def apply_argon_overlay():
@@ -96,7 +170,7 @@ def apply_argon_overlay():
         src_branding = REPO_ROOT / branding["from"]
         dst_branding = pathlib.Path(branding["to"])
         if dst_branding.exists():
-            shutil.rmtree(dst_branding)
+            platform_compat.rmtree_retry(dst_branding)
         dst_branding.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src_branding, dst_branding)
 
@@ -125,26 +199,29 @@ def apply_argon_overlay():
                 lines.append(f"  {item['destination']} ({item['source']})")
             lines.append(end)
             block = "\n".join(lines)
-            anchor = hook["anchor"]
-            if begin not in text and anchor in text:
+            anchor = hook.get("anchor") or hook.get("insert_before")
+            if begin not in text and anchor and anchor in text:
                 text = text.replace(anchor, f"{block}\n{anchor}", 1)
-                target.write_text(text, encoding="utf-8")
+                platform_compat.write_text_lf(target, text)
 
         elif hook.get("path", "").endswith(".xhtml") and "include" in hook:
             begin, end = "<!-- BEGIN Argon overlay -->", "<!-- END Argon overlay -->"
-            block = f"{begin}\n#include {hook['include']}\n{end}"
-            anchor = hook["anchor"]
-            if begin not in text and anchor in text:
+            inc_name = pathlib.Path(hook["include"]).name
+            block = f"{begin}\n#include {inc_name}\n{end}"
+            anchor = hook.get("anchor") or hook.get("insert_after")
+            if begin not in text and anchor and anchor in text:
                 text = text.replace(anchor, f"{anchor}\n{block}", 1)
-                target.write_text(text, encoding="utf-8")
+                platform_compat.write_text_lf(target, text)
 
         elif hook.get("path", "").endswith(".js") and "include" in hook:
             begin, end = "// BEGIN Argon overlay", "// END Argon overlay"
-            prefs_file = REPO_ROOT / "argon" / "preferences" / hook["include"]
+            prefs_file = REPO_ROOT / hook["include"]
+            if not prefs_file.is_file():
+                prefs_file = REPO_ROOT / "argon" / "preferences" / hook["include"]
             if begin not in text and prefs_file.is_file():
                 body = prefs_file.read_text(encoding="utf-8").strip()
                 text = f"{text.rstrip()}\n\n{begin}\n{body}\n{end}\n"
-                target.write_text(text, encoding="utf-8")
+                platform_compat.write_text_lf(target, text)
 
         elif "replace_line" in hook:
             begin, end = "# BEGIN Argon overlay", "# END Argon overlay"
@@ -153,7 +230,7 @@ def apply_argon_overlay():
             block = f"{begin}\n{body}\n{end}"
             if begin not in text and needle in text:
                 text = text.replace(needle, block, 1)
-                target.write_text(text, encoding="utf-8")
+                platform_compat.write_text_lf(target, text)
 
         elif "replacements" in hook:
             updated = text
@@ -161,108 +238,166 @@ def apply_argon_overlay():
                 if item["old"] in updated and item["new"] not in updated:
                     updated = updated.replace(item["old"], item["new"], 1)
             if updated != text:
-                target.write_text(updated, encoding="utf-8")
+                platform_compat.write_text_lf(target, updated)
 
 
-#
-# Main function
-#
-
-def librewolf_patches():
-    print("Entering '{}'...".format(srcdir))
+def librewolf_patches(srcdir, version, release, *, create_mozconfig=True):
+    print(f"Entering '{srcdir}'...")
+    prev_cwd = os.getcwd()
     os.chdir(srcdir)
+    try:
+        if create_mozconfig:
+            win_moz = REPO_ROOT / "config" / "mozconfig.windows"
+            if platform_compat.is_windows() and win_moz.is_file():
+                cp(win_moz, "mozconfig")
+            elif (REPO_ROOT / "assets" / "mozconfig.new").is_file():
+                cp(REPO_ROOT / "assets" / "mozconfig.new", "mozconfig")
 
-    # Create the right mozconfig file
-    if create_mozconfig:
-        cp("../assets/mozconfig.new", "mozconfig")
+        with open(REPO_ROOT / "assets" / "patches.txt", encoding="utf-8") as f:
+            patch_files = []
+            for raw_line in f:
+                parsed = parse_patch_entry(raw_line)
+                if parsed:
+                    patch_files.append(parsed)
 
-    # Copy rows ofpatches.txt into array
-    with open("../assets/patches.txt") as f:
-        patch_files = [line.rstrip() for line in f]
+        if (REPO_ROOT / "themes" / "browser").is_dir():
+            cptree(REPO_ROOT / "themes" / "browser", pathlib.Path("browser"))
+        if (REPO_ROOT / "browser" / "branding" / "argon").is_dir():
+            cptree(REPO_ROOT / "browser" / "branding" / "argon", pathlib.Path("browser/branding/argon"))
 
-    # Copy theme files and Argon branding
-    exec("cp -r ../themes/browser .")
-    exec("mkdir -p browser/branding && cp -r ../browser/branding/argon browser/branding/argon")
-
-    # Apply patches inside patches.txt
-    for patch_file in patch_files:
-        if not patch_file.startswith("#"):
+        for patch_file in patch_files:
             patch(patch_file)
 
-    # Copy settings directory
-    exec("cp -vr ../settings .")
+        if (REPO_ROOT / "settings").is_dir():
+            cptree(REPO_ROOT / "settings", pathlib.Path("settings"))
 
-    # Provide build ID based on release timestamp
-    with open("../release-timestamp", "r") as file:
-        timestamp = int(file.read().strip())
-        timestamp_str = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
-        with open("build-id", "w") as f:
-            print("build-id: {}".format(timestamp_str))
-            f.write(timestamp_str + "\n")
+        release_ts = REPO_ROOT / "release-timestamp"
+        if release_ts.is_file():
+            timestamp = int(release_ts.read_text(encoding="utf-8").strip())
+            timestamp_str = datetime.datetime.fromtimestamp(
+                timestamp, datetime.timezone.utc
+            ).strftime("%Y%m%d%H%M%S")
+            print(f"build-id: {timestamp_str}")
+            platform_compat.write_text_lf("build-id", timestamp_str + "\n")
 
-    # Check if version contains 'rc'
-    if "rc" in version:
-        # Remove the 'rc*' part from version
-        clean_version = version.split("rc")[0]
-        version_display = "{}-{}\n".format(clean_version, release)
-    else:
-        version_display = "{}-{}\n".format(version, release)
+        if "rc" in version:
+            clean_version = version.split("rc")[0]
+            version_display = f"{clean_version}-{release}\n"
+        else:
+            version_display = f"{version}-{release}\n"
 
-    with open("config/version_display.txt", "w") as f:
-        print("version_display.txt: {}".format(version_display.strip()))
-        f.write(version_display)
+        print(f"version_display.txt: {version_display.strip()}")
+        pathlib.Path("config").mkdir(parents=True, exist_ok=True)
+        platform_compat.write_text_lf("config/version_display.txt", version_display)
 
-    # Patch the manual configuration on standard pane
-    mkdirp("browser/themes/shared/preferences")
-    cp("../patches/pref-pane/category-librewolf.svg", "browser/themes/shared/preferences/category-librewolf.svg")
-    cp("../patches/pref-pane/librewolf.css", "browser/themes/shared/preferences/librewolf.css")
-    mkdirp("browser/components/preferences")
-    cp("../patches/pref-pane/librewolf.inc.xhtml", "browser/components/preferences/librewolf.inc.xhtml")
-    cp("../patches/pref-pane/librewolf.js", "browser/components/preferences/librewolf.js")
+        mkdirp("browser/themes/shared/preferences")
+        cp(
+            REPO_ROOT / "patches/pref-pane/category-librewolf.svg",
+            "browser/themes/shared/preferences/category-librewolf.svg",
+        )
+        cp(
+            REPO_ROOT / "patches/pref-pane/librewolf.css",
+            "browser/themes/shared/preferences/librewolf.css",
+        )
+        mkdirp("browser/components/preferences")
+        cp(
+            REPO_ROOT / "patches/pref-pane/librewolf.inc.xhtml",
+            "browser/components/preferences/librewolf.inc.xhtml",
+        )
+        cp(
+            REPO_ROOT / "patches/pref-pane/librewolf.js",
+            "browser/components/preferences/librewolf.js",
+        )
 
-    exec("""
+        if (REPO_ROOT / "l10n").is_dir():
+            for src_rel, dst_rel in (
+                ("l10n/en-US/browser/browser/preferences/preferences.inc.ftl", "browser/locales/en-US/browser/preferences/preferences.ftl"),
+                ("l10n/en-US/browser/browser/preferences/permissions.inc.ftl", "browser/locales/en-US/browser/preferences/permissions.ftl"),
+                ("l10n/en-US/browser/browser/aboutDialog.inc.ftl", "browser/locales/en-US/browser/aboutDialog.ftl"),
+                ("l10n/en-US/browser/browser/browser.inc.ftl", "browser/locales/en-US/browser/browser.ftl"),
+                ("l10n/en-US/browser/browser/translations.inc.ftl", "browser/locales/en-US/browser/translations.ftl"),
+                ("l10n/en-US/browser/chrome/browser/sitePermissions.inc.properties", "browser/locales/en-US/chrome/browser/sitePermissions.properties"),
+                ("l10n/en-US/browser/chrome/browser/browser.inc.properties", "browser/locales/en-US/chrome/browser/browser.properties"),
+                ("l10n/en-US/toolkit/toolkit/pictureinpicture/pictureinpicture.inc.ftl", "toolkit/locales/en-US/toolkit/pictureinpicture/pictureinpicture.ftl"),
+                ("l10n/en-US/browser/browser/newtab/newtab.inc.ftl", "browser/locales/en-US/browser/newtab/newtab.ftl"),
+                ("l10n/en-US/browser/browser/customkeys.inc.ftl", "browser/locales/en-US/browser/customkeys.ftl"),
+            ):
+                append_file(REPO_ROOT / src_rel, dst_rel)
 
-    cat ../l10n/en-US/browser/browser/preferences/preferences.inc.ftl >> browser/locales/en-US/browser/preferences/preferences.ftl
-    cat ../l10n/en-US/browser/browser/preferences/permissions.inc.ftl >> browser/locales/en-US/browser/preferences/permissions.ftl
-    cat ../l10n/en-US/browser/browser/aboutDialog.inc.ftl >> browser/locales/en-US/browser/aboutDialog.ftl
-    cat ../l10n/en-US/browser/browser/browser.inc.ftl >> browser/locales/en-US/browser/browser.ftl
-    cat ../l10n/en-US/browser/browser/translations.inc.ftl >> browser/locales/en-US/browser/translations.ftl
-    cat ../l10n/en-US/browser/chrome/browser/sitePermissions.inc.properties >> browser/locales/en-US/chrome/browser/sitePermissions.properties
-    cat ../l10n/en-US/browser/chrome/browser/browser.inc.properties >> browser/locales/en-US/chrome/browser/browser.properties
-    cat ../l10n/en-US/toolkit/toolkit/pictureinpicture/pictureinpicture.inc.ftl >> toolkit/locales/en-US/toolkit/pictureinpicture/pictureinpicture.ftl
-    cat ../l10n/en-US/browser/browser/newtab/newtab.inc.ftl >> browser/locales/en-US/browser/newtab/newtab.ftl
-    cp ../l10n/en-US/toolkit/toolkit/branding/brandings.ftl toolkit/locales/en-US/toolkit/branding/brandings.ftl
-    cat ../l10n/en-US/browser/browser/customkeys.inc.ftl >> browser/locales/en-US/browser/customkeys.ftl
+            cp(
+                REPO_ROOT / "l10n/en-US/toolkit/toolkit/branding/brandings.ftl",
+                "toolkit/locales/en-US/toolkit/branding/brandings.ftl",
+            )
 
-    sed -i 's/Firefox/Argon/g' browser/locales/en-US/chrome/browser/appstrings.properties
+        appstrings = pathlib.Path("browser/locales/en-US/chrome/browser/appstrings.properties")
+        if appstrings.is_file():
+            replace_text_in_file(appstrings, "Firefox", "Argon")
 
-    echo "" >> browser/locales/en-US/browser/aboutDialog.ftl
-    echo "bottomLinks-license = Licensing Information" >> browser/locales/en-US/browser/aboutDialog.ftl
-    echo "bottomLinks-rights = End-User Rights" >> browser/locales/en-US/browser/aboutDialog.ftl
-    echo "bottomLinks-privacy = Privacy Policy" >> browser/locales/en-US/browser/aboutDialog.ftl
+        append_lines(
+            "browser/locales/en-US/browser/aboutDialog.ftl",
+            [
+                "",
+                "bottomLinks-license = Licensing Information",
+                "bottomLinks-rights = End-User Rights",
+                "bottomLinks-privacy = Privacy Policy",
+            ],
+        )
 
-    """)
+        apply_argon_overlay()
 
-    # Apply Argon UI overlay, tokens, appearance controller, and preferences
-    apply_argon_overlay()
+        search_cfg = REPO_ROOT / "assets" / "search-config.json"
+        if search_cfg.is_file():
+            cp(search_cfg, "services/settings/dumps/main/search-config-v2.json")
+        else:
+            search_v2 = REPO_ROOT / "assets" / "search-config-v2.json"
+            if search_v2.is_file():
+                cp(search_v2, "services/settings/dumps/main/search-config-v2.json")
 
-    # Copy search-config.json
-    cp("../assets/search-config.json", "services/settings/dumps/main/search-config-v2.json")
-
-    # Apply the most recent uBO assets cleanly
-    cp("../assets/uBOAssets.json", "settings/uBOAssets.json")
-
-    print("Leaving '{}'...".format(srcdir))
-    os.chdir("..")
+        ubo_assets = REPO_ROOT / "assets" / "uBOAssets.json"
+        if ubo_assets.is_file():
+            cp(ubo_assets, "settings/uBOAssets.json")
+    finally:
+        print(f"Leaving '{srcdir}'...")
+        os.chdir(prev_cwd)
 
 
-if not no_execute:
-    librewolf_patches()
+def main(argv=None):
+    start_time = datetime.datetime.now()
+    args = list(sys.argv[1:] if argv is None else argv)
+    no_execute = False
+    create_mozconfig = True
+    while args:
+        if args[0] == "--no-execute":
+            no_execute = True
+            args.pop(0)
+        elif args[0] == "--no-mozconfig":
+            create_mozconfig = False
+            args.pop(0)
+        else:
+            break
 
-    # Record elapsed time
-    elapsed_time = datetime.datetime.now() - start_time
-    elapsed_seconds = elapsed_time.total_seconds()
-    minutes = int(elapsed_seconds // 60)
-    seconds = int(elapsed_seconds % 60)
-    microseconds = elapsed_time.microseconds
-    print("-> Elapsed time: {:02d}:{:02d}.{:02d}".format(minutes, seconds, microseconds))
+    if len(args) != 2:
+        sys.stderr.write("error: please specify version and release of Argon source\n")
+        return 1
+
+    version, release = args[0], args[1]
+    srcdir = f"argon-{version}-{release}"
+    if not os.path.exists(f"{srcdir}/configure.py") and os.path.exists(f"librewolf-{version}-{release}/configure.py"):
+        srcdir = f"librewolf-{version}-{release}"
+    if not os.path.exists(f"{srcdir}/configure.py"):
+        print(f"fatal error: '{srcdir}' directory not found.")
+        return 1
+
+    if not no_execute:
+        librewolf_patches(srcdir, version, release, create_mozconfig=create_mozconfig)
+        elapsed = datetime.datetime.now() - start_time
+        elapsed_seconds = elapsed.total_seconds()
+        minutes = int(elapsed_seconds // 60)
+        seconds = int(elapsed_seconds % 60)
+        microseconds = elapsed.microseconds
+        print("-> Elapsed time: {:02d}:{:02d}.{:02d}".format(minutes, seconds, microseconds))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
