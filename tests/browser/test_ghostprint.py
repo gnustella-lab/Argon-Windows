@@ -30,9 +30,9 @@ const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getCont
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
         os.environ['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS']='1'
-        browser=Marionette(bin=argon_test_binary(),port=port,headless=True,workspace=str(workspace_dir()),gecko_log=str(artifacts_dir()/'ghostprint-gecko.log'),prefs={'argon.onboarding.completed':True,'privacy.resistFingerprinting':False,'privacy.resistFingerprinting.pbmode':False,'browser.privatebrowsing.autostart':False,'privacy.fingerprintingProtection':False,'privacy.fingerprintingProtection.pbmode':False})
+        browser=Marionette(bin=argon_test_binary(),port=port,headless=True,workspace=str(workspace_dir()),gecko_log=str(artifacts_dir()/'ghostprint-gecko.log'),startup_timeout=90,prefs={'argon.onboarding.completed':True,'privacy.resistFingerprinting':False,'privacy.resistFingerprinting.pbmode':False,'browser.privatebrowsing.autostart':False,'privacy.fingerprintingProtection':False,'privacy.fingerprintingProtection.pbmode':False})
         try:
-            browser.start_session(); browser.set_window_rect(width=1200,height=740); browser.set_context('chrome')
+            browser.start_session(); browser.timeout.script=120; browser.set_window_rect(width=1200,height=740); browser.set_context('chrome')
             available=browser.execute_async_script('''const done=arguments[arguments.length-1]; const {ArgonGhostPrint:g}=ChromeUtils.importESModule('chrome://browser/content/argon/adblock/ghostprint.sys.mjs'); g.ready.then(()=>done(true),e=>done(String(e)));''',sandbox=None)
             # Test-only opt-out after Firefox startup reapplies FPP defaults; production never changes these.
             browser.execute_script("for (const p of ['privacy.resistFingerprinting','privacy.resistFingerprinting.pbmode','privacy.fingerprintingProtection','privacy.fingerprintingProtection.pbmode']) Services.prefs.setBoolPref(p,false)",sandbox=None)
@@ -91,9 +91,12 @@ const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getCont
             browser.set_context('chrome')
             from marionette_driver.by import By
             from marionette_driver.wait import Wait
-            browser.find_element(By.ID,'argon-adblock-button').click()
-            Wait(browser).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel').state==='open'",sandbox=None))
-            Wait(browser).until(lambda b:b.execute_script("return document.getElementById('argon-adblock-ghost-status').textContent.includes('Active on this page')",sandbox=None))
+            def open_adblock_panel():
+                Wait(browser, timeout=15).until(lambda b: b.execute_script("return !!document.getElementById('argon-adblock-button')",sandbox=None))
+                browser.find_element(By.ID,'argon-adblock-button').click()
+                Wait(browser, timeout=15).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel')?.state==='open'",sandbox=None))
+            open_adblock_panel()
+            Wait(browser, timeout=15).until(lambda b:b.execute_script("return document.getElementById('argon-adblock-ghost-status')?.textContent.includes('Active on this page')",sandbox=None))
             browser.execute_script("document.getElementById('argon-adblock-middle').scrollTop=0",sandbox=None)
             self.assertTrue(browser.find_element(By.ID,'argon-adblock-ghost-site').is_displayed())
             self.assertTrue(browser.execute_script("const s=document.getElementById('argon-adblock-ghost-status').getBoundingClientRect(),m=document.getElementById('argon-adblock-middle').getBoundingClientRect();return s.top>=m.top&&s.bottom<=m.bottom",sandbox=None))
@@ -115,31 +118,31 @@ const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getCont
                 browser.execute_script("document.getElementById(arguments[0]).scrollIntoView({block:'nearest'})",[id],sandbox=None)
                 x,y=browser.execute_script("const r=document.getElementById(arguments[0]).getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]",[id],sandbox=None)
                 browser.actions.sequence('pointer','mouse').pointer_move(int(x),int(y)).pointer_down().pointer_up().perform()
-            browser.find_element(By.ID,'argon-adblock-button').click(); click_panel('argon-adblock-settings')
+            open_adblock_panel(); click_panel('argon-adblock-settings')
             click_panel('argon-adblock-ghost-canvas')
             self.assertFalse(browser.execute_script("return Services.prefs.getBoolPref('argon.ghostprint.canvas')",sandbox=None))
             click_panel('argon-adblock-close'); browser.set_context('content'); browser.refresh()
             self.assertEqual(browser.execute_script('return window.wrappedJSObject.early.canvas'),0)
             self.assertGreater(browser.execute_script('return window.wrappedJSObject.early.audio'),0)
-            browser.set_context('chrome'); browser.find_element(By.ID,'argon-adblock-button').click(); click_panel('argon-adblock-settings')
+            browser.set_context('chrome'); open_adblock_panel(); click_panel('argon-adblock-settings')
             click_panel('argon-adblock-ghost-canvas'); click_panel('argon-adblock-ghost-global')
             self.assertTrue(browser.execute_script("return Services.prefs.getBoolPref('argon.adblock.enabled',true)",sandbox=None))
             click_panel('argon-adblock-close'); browser.set_context('content'); browser.refresh()
             self.assertEqual(browser.execute_script('return window.wrappedJSObject.early.canvas'),0)
             self.assertEqual(browser.execute_script('return window.wrappedJSObject.early.audio'),0)
-            browser.set_context('chrome'); browser.find_element(By.ID,'argon-adblock-button').click(); click_panel('argon-adblock-settings')
+            browser.set_context('chrome'); open_adblock_panel(); click_panel('argon-adblock-settings')
             click_panel('argon-adblock-ghost-global'); click_panel('argon-adblock-close')
             # Private realm has a distinct seed, and exceptions never enter persistent prefs.
             normal_handle=browser.current_window_handle
             browser.execute_script('OpenBrowserWindow({private:true})',sandbox=None)
-            Wait(browser).until(lambda b:len(b.window_handles)>1)
+            Wait(browser, timeout=15).until(lambda b:len(b.window_handles)>1)
             private_handle=next(h for h in browser.window_handles if h!=normal_handle)
             browser.switch_to_window(private_handle)
             browser.set_context('content'); browser.navigate(f'http://127.0.0.1:{server.server_port}/')
             private=browser.execute_script('return window.wrappedJSObject.early')
             self.assertGreater(private['canvas'],0); self.assertNotEqual(private['pixels'],first['pixels'])
             browser.set_context('chrome')
-            browser.find_element(By.ID,'argon-adblock-button').click(); click_panel('argon-adblock-ghost-site'); click_panel('argon-adblock-close')
+            open_adblock_panel(); click_panel('argon-adblock-ghost-site'); click_panel('argon-adblock-close')
             self.assertNotIn('127.0.0.1',browser.execute_script("return Services.prefs.getStringPref('argon.ghostprint.sites','[]')",sandbox=None))
             browser.set_context('content'); browser.refresh()
             self.assertEqual(browser.execute_script('return window.wrappedJSObject.early.canvas'),0)

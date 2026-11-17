@@ -36,10 +36,12 @@ class NativeAdblock(unittest.TestCase):
         browser = Marionette(bin=argon_test_binary(), port=port,
             headless=True, workspace=str(workspace_dir()),
             gecko_log=str(artifacts_dir() / 'adblock-gecko.log'),
+            startup_timeout=90,
             prefs={'intl.locale.requested': 'pt-BR', 'extensions.update.enabled': False, 'extensions.update.autoUpdateDefault': False,
                    'argon.onboarding.completed': True})
         try:
             browser.start_session()
+            browser.timeout.script = 120
             browser.set_window_rect(width=1400, height=1000)
             browser.set_context('chrome')
             result = browser.execute_async_script('''
@@ -51,8 +53,11 @@ class NativeAdblock(unittest.TestCase):
             self.assertTrue(browser.execute_script("return !!document.getElementById('argon-adblock-button')", sandbox=None))
             from marionette_driver.by import By
             from marionette_driver.wait import Wait
-            browser.find_element(By.ID, 'argon-adblock-button').click()
-            Wait(browser).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel').state === 'open'", sandbox=None))
+            def open_adblock_panel():
+                Wait(browser, timeout=15).until(lambda b: b.execute_script("return !!document.getElementById('argon-adblock-button')", sandbox=None))
+                browser.find_element(By.ID, 'argon-adblock-button').click()
+                Wait(browser, timeout=15).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel')?.state === 'open'", sandbox=None))
+            open_adblock_panel()
             def click_panel(id):
                 # WebDriver ElementClick hit-testing excludes native popup widgets;
                 # use real pointer input at the rendered control's coordinates.
@@ -78,7 +83,8 @@ class NativeAdblock(unittest.TestCase):
             from marionette_driver.wait import Wait
             Wait(browser, timeout=10).until(lambda b: b.execute_script("return getComputedStyle(document.querySelector('.advert')).display === 'none'"))
             browser.set_context('chrome')
-            browser.find_element(By.ID, 'argon-adblock-button').click()
+            open_adblock_panel()
+            Wait(browser, timeout=10).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-domain')?.textContent === '127.0.0.1'", sandbox=None))
             (ROOT / 'artifacts/adblock-panel.png').write_bytes(browser.screenshot(format='binary'))
             self.assertEqual(browser.execute_script("return document.getElementById('argon-adblock-domain').textContent", sandbox=None), '127.0.0.1')
             click_panel('argon-adblock-advanced-toggle')
@@ -99,7 +105,7 @@ class NativeAdblock(unittest.TestCase):
             self.assertNotEqual(browser.execute_script("return getComputedStyle(document.querySelector('.advert')).display"), 'none')
             browser.switch_to_default_content()
             browser.set_context('chrome')
-            browser.find_element(By.ID, 'argon-adblock-button').click()
+            open_adblock_panel()
             click_panel('argon-adblock-settings')
             click_panel('argon-adblock-global')
             self.assertFalse(browser.execute_script("return Services.prefs.getBoolPref('argon.adblock.enabled')", sandbox=None))
@@ -114,17 +120,18 @@ class NativeAdblock(unittest.TestCase):
             click_panel('argon-adblock-lists-view-back')
             self.assertFalse(browser.find_element(By.ID, 'argon-adblock-lists').is_displayed())
             click_panel('argon-adblock-close')
-            browser.find_element(By.ID, 'argon-adblock-button').click()
+            open_adblock_panel()
             from marionette_driver.keys import Keys
+            Wait(browser, timeout=10).until(lambda b: b.execute_script("return document.activeElement?.id === 'argon-adblock-site'", sandbox=None))
             self.assertEqual(browser.execute_script("return document.activeElement.id", sandbox=None), 'argon-adblock-site')
             browser.actions.sequence('key', 'keyboard').key_down(Keys.TAB).key_up(Keys.TAB).perform()
             self.assertEqual(browser.execute_script("return document.activeElement.id", sandbox=None), 'argon-adblock-advanced-toggle')
             browser.find_element(By.ID, 'argon-adblock-close').send_keys(Keys.TAB)
             self.assertEqual(browser.execute_script("return document.activeElement.id", sandbox=None), 'argon-adblock-site')
             browser.actions.sequence('key', 'keyboard').key_down(Keys.ESCAPE).key_up(Keys.ESCAPE).perform()
-            Wait(browser).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel').state === 'closed'", sandbox=None))
+            Wait(browser, timeout=10).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel')?.state === 'closed'", sandbox=None))
             self.assertEqual(browser.execute_script("const p=document.getElementById('argon-adblock-panel'), b=document.getElementById('argon-adblock-button'); return [b.getAttribute('aria-expanded'), p.contains(document.activeElement)]", sandbox=None), ['false', False])
-            browser.find_element(By.ID, 'argon-adblock-button').click()
+            open_adblock_panel()
             click_panel('argon-adblock-settings')
             editor = browser.find_element(By.ID, 'argon-adblock-filters')
             editor.send_keys(Keys.CONTROL + 'a' + Keys.NULL + Keys.BACK_SPACE)

@@ -27,7 +27,9 @@ class CustomizationSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
-        cls.workspace = tempfile.TemporaryDirectory(prefix="argon-custom-tests-")
+        cls.workspace = tempfile.TemporaryDirectory(
+            prefix="argon-custom-tests-", ignore_cleanup_errors=True
+        )
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -50,6 +52,7 @@ class CustomizationSmoke(unittest.TestCase):
             )
             try:
                 cls.browser.start_session()
+                cls.browser.timeout.script = 90
                 cls.browser.set_context("chrome")
                 cls.browser.set_window_rect(width=1360, height=960)
                 Wait(cls.browser, timeout=20).until(

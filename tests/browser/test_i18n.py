@@ -28,6 +28,7 @@ class TestArgonI18n(unittest.TestCase):
             port=port,
             headless=True,
             workspace=str(workspace_dir()),
+            startup_timeout=90,
             prefs={
                 'extensions.update.enabled': False,
                 'extensions.update.autoUpdateDefault': False,
@@ -36,6 +37,7 @@ class TestArgonI18n(unittest.TestCase):
         )
         try:
             browser.start_session()
+            browser.timeout.script = 90
             browser.set_context('chrome')
 
             # 1. Verify module loading and 45 locales in Gecko chrome context

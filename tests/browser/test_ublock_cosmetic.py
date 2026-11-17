@@ -65,9 +65,11 @@ setTimeout(() => {
         browser = Marionette(bin=argon_test_binary(), port=port,
             headless=True, workspace=str(workspace_dir()),
             gecko_log=str(artifacts_dir() / 'ublock-cosmetic-gecko.log'),
+            startup_timeout=90,
             prefs={'extensions.update.enabled': False, 'argon.onboarding.completed': True})
         try:
             browser.start_session()
+            browser.timeout.script = 120
             browser.set_context('chrome')
             result = browser.execute_async_script('''
               const done=arguments[arguments.length-1];

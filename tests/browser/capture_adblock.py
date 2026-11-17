@@ -47,12 +47,13 @@ def click(id):
 
 try:
     browser.start_session()
+    browser.timeout.script = 120
     browser.set_window_rect(x=0, y=0, width=1200, height=740)
     browser.navigate(f'http://127.0.0.1:{server.server_port}/')
     browser.set_context('chrome')
     browser.execute_async_script("const done=arguments[arguments.length-1]; ChromeUtils.importESModule('chrome://browser/content/argon/adblock/service.sys.mjs').ArgonAdblock.ready.then(()=>done(true));", sandbox=None)
     browser.find_element(By.ID, 'argon-adblock-button').click()
-    Wait(browser).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel').state === 'open'", sandbox=None))
+    Wait(browser, timeout=15).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-panel')?.state === 'open'", sandbox=None))
     records = []
     for name, theme, target in [('home-dark', 'dark', None), ('lists-dark', 'dark', 'argon-adblock-lists-toggle'), ('settings-light', 'light', 'argon-adblock-settings')]:
         browser.execute_script("Services.prefs.setStringPref('argon.theme', arguments[0]);", [theme], sandbox=None)

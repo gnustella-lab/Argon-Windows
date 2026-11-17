@@ -115,7 +115,7 @@ class ChromeSmoke(unittest.TestCase):
         cls.browser.instance.close(clean=True)
         del cls.browser
         gc.collect()
-        shutil.rmtree(cls.resources)
+        shutil.rmtree(cls.resources, ignore_errors=True)
 
     def js(self, script, args=()):
         return self.browser.execute_script(script, args, sandbox=None)

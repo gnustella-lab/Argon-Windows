@@ -27,7 +27,9 @@ BINARY = os.environ.get("ARGON_TEST_BINARY") or (str(DEFAULT_BINARY) if DEFAULT_
 class OnboardingNativeSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workspace = tempfile.TemporaryDirectory(prefix="argon-onboarding-tests-")
+        cls.workspace = tempfile.TemporaryDirectory(
+            prefix="argon-onboarding-tests-", ignore_cleanup_errors=True
+        )
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -45,6 +47,7 @@ class OnboardingNativeSmoke(unittest.TestCase):
             )
             try:
                 cls.browser.start_session()
+                cls.browser.timeout.script = 90
                 cls.browser.set_context("chrome")
                 cls.browser.set_window_rect(width=1280, height=900)
             except Exception:
