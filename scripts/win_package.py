@@ -316,7 +316,7 @@ def _resolve_windows_runtime(
         dist = Path(workspace.obj) / "dist"
         zips = sorted(
             p for p in dist.glob(f"{APP_NAME}-*.win*.zip")
-            if p.is_file() and not p.name.endswith("-portable.zip")
+            if p.is_file() and p.name.endswith((".win32.zip", ".win64.zip", ".win64-aarch64.zip"))
         ) if dist.is_dir() else []
         if zips:
             archive_path = zips[0].resolve()

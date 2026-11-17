@@ -89,6 +89,22 @@ class WindowsPackagingTests(unittest.TestCase):
             (rt / "argon_adblock.dll").write_bytes(make_minimal_pe_bytes())
         return rt
 
+    def test_discovery_selects_runtime_zip_over_xpt_artifacts(self):
+        workspace = FakeWorkspace(self.root)
+        dist = workspace.obj / "dist"
+        dist.mkdir()
+        base = "argon-162.0a1.en-US.win64"
+        with zipfile.ZipFile(dist / f"{base}.xpt_artifacts.zip", "w") as sidecar:
+            sidecar.writestr("interfaces.xpt", b"xpt")
+        runtime = self._make_runtime()
+        with zipfile.ZipFile(dist / f"{base}.zip", "w") as package:
+            for path in runtime.rglob("*"):
+                if path.is_file():
+                    package.write(path, Path("argon") / path.relative_to(runtime))
+        root, mode, _, _ = self.wp._resolve_windows_runtime(workspace, None, None, self.root)
+        self.assertEqual(mode, "archive")
+        self.assertTrue((root / "argon.exe").is_file())
+
     def test_portable_sources_enforce_strict_profile_isolation_and_valid_rc(self):
         c_src = (PORTABLE_DIR / "argon-portable.c").read_text(encoding="utf-8")
         cs_src = (PORTABLE_DIR / "ArgonPortable.cs").read_text(encoding="utf-8")
