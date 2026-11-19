@@ -37,8 +37,6 @@
     "start": "node scripts/run-python.mjs scripts/argon.py run",
     "package": "node scripts/run-python.mjs scripts/argon.py package",
     "stage:runtime": "node scripts/run-python.mjs scripts/argon.py stage-runtime",
-    "flatpak": "node scripts/run-python.mjs scripts/argon.py flatpak",
-    "verify:flatpak": "node scripts/run-python.mjs scripts/argon.py verify-flatpak",
     "win:portable": "node scripts/run-python.mjs scripts/argon.py win-portable",
     "win:installer": "node scripts/run-python.mjs scripts/argon.py win-installer",
     "verify:windows": "node scripts/run-python.mjs scripts/argon.py verify-windows",

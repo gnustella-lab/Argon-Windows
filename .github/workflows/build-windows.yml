@@ -13,8 +13,8 @@
 #   Standard `windows-latest` runners have ~14-35 GB free before cleanup and
 #   a hard 360-minute job timeout. This workflow prunes unused preinstalled SDKs
 #   and caches before checkout and triggers on `push` to `main` / `v*` tags
-#   (matching `.github/workflows/build.yml`) plus `workflow_dispatch` (where a
-#   larger or self-hosted runner can also be selected via `inputs.runner`).
+#   plus `workflow_dispatch` (where a larger or self-hosted runner can also be
+#   selected via `inputs.runner`).
 #   It never simulates or skips failed Gecko compilation.
 
 name: Build Argon Browser (Windows)
@@ -565,11 +565,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "Argon Browser $tag" --generate-notes @prerelease
           }
-          # Linux publishes its own SHA256SUMS to this same release.
-          Copy-Item SHA256SUMS SHA256SUMS-win64
           $assets = Get-ChildItem -File | Where-Object {
             $_.Name -like "argon-*.win64-portable.zip" -or
             $_.Name -like "argon-*.win64.installer.exe" -or
-            $_.Name -eq "SHA256SUMS-win64"
+            $_.Name -eq "SHA256SUMS"
           } | ForEach-Object { $_.FullName }
           gh release upload $tag --clobber @assets

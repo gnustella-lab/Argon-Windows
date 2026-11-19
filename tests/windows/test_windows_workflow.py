@@ -81,8 +81,8 @@ class WindowsWorkflowShellTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = json.loads(captured.read_text(encoding="utf-8-sig"))
             uploaded = {Path(arg).name for arg in args[4:]}
-            self.assertEqual(uploaded, set(names) | {"SHA256SUMS-win64"})
-            self.assertEqual((release / "SHA256SUMS-win64").read_text(encoding="utf-8"), sums)
+            self.assertEqual(uploaded, set(names) | {"SHA256SUMS"})
+            self.assertEqual((release / "SHA256SUMS").read_text(encoding="utf-8"), sums)
     def test_build_input_handoff_contains_only_runtime_and_evidence(self):
         with tempfile.TemporaryDirectory(prefix="argon-workflow-") as temp:
             root = Path(temp)

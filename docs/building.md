@@ -174,39 +174,14 @@ prefs or the mozconfig try to.
   `ARGON_GPG_SIGN` signs OSTree commits and bundles once release GPG keys are
   provisioned on CI or a release host.
 
-## GitHub Actions full build
+## GitHub Actions Windows release build
 
-`.github/workflows/build.yml` runs the end-to-end Linux x86_64 source build on
-GitHub Actions (`push` to `main`/`v*` tags or `workflow_dispatch`):
-
-1. Frees ~55 GB of pre-installed runner bloat and provisions an 8 GB swapfile
-   so Rust LTO and `libxul.so` linking do not run out of disk or memory.
-2. Runs contract and metadata checks (`npm test`, `npm run test:python`,
-   `npm run test:dev`, `node scripts/adblock-policy.mjs verify`,
-   `desktop-file-validate`, and `appstreamcli validate --no-net --strict`).
-3. Restores/saves cached Mozilla toolchains (`~/.mozbuild`), Rust (`~/.cargo`,
-   `~/.rustup`), and the verified upstream tarball.
-4. Runs `fetch`, `apply`, `bootstrap`, and `build` (`dist/bin/argon`).
-5. Verifies `dist/bin/application.ini` (`Name=Argon`, `Vendor=Argon`,
-   `Profile=argon`, `RemotingName=argon`) and `dist/bin/argon --version`.
-6. Runs the Marionette regression suite (`test_chrome`, `test_adblock`,
-   `test_ublock_cosmetic`, `test_ghostprint`, `test_workspaces`,
-   `test_customization`, `test_onboarding`, `test_settings`, `test_i18n`) with
-   `ARGON_TEST_BINARY` pointed at the newly compiled `dist/bin/argon`.
-7. Runs `package` (`./mach package`), `flatpak` (`python3 scripts/argon.py flatpak`),
-   and `verify-flatpak --require-full-omni`, checks `sha256sum -c SHA256SUMS`,
-   uploads `argon-*.flatpak`, `SHA256SUMS`, `application.ini`, and screenshots as
-   `argon-flatpak-x86_64`, and publishes a GitHub Release (marked prerelease for
-   `alpha`/`beta`/`rc` tags) on `v*` tags.
-
-## Installing the Flatpak bundle
-
-```bash
-sha256sum -c SHA256SUMS
-flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak install --user -y argon-0.1.0.en-US.linux-x86_64.flatpak
-flatpak run io.github.argon_browser.Argon
-```
+`.github/workflows/build-windows.yml` is the only full build/release workflow in
+this repository. It compiles the Windows browser on `windows-latest`, runs the
+Marionette regression suites against `dist/bin/argon.exe`, packages a portable
+ZIP and an NSIS installer, verifies them, and uploads them as
+`argon-windows-x86_64`. On `v*` tags it publishes a GitHub Release (marked
+prerelease for `alpha`/`beta`/`rc`) with `SHA256SUMS`. See `docs/windows.md`.
 
 ## Requirements
 
