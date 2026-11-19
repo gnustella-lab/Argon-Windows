@@ -143,6 +143,30 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("HideIconsCommand", text)
         self.assertNotIn("ShowIconsCommand", text)
 
+    def test_nsi_contract_rejects_makensis_path_and_quoting_bugs(self):
+        """NSIS splits paths on backslash only and misparses nested quotes."""
+        original = INSTALLER_NSI.read_text(encoding="utf-8")
+        fake_dir = self.root / "nsi"
+        fake_dir.mkdir()
+        script = fake_dir / "argon-installer.nsi"
+
+        script.write_text(
+            original.replace("${ARGON_BRANDING_DIR}\\", "${ARGON_BRANDING_DIR}/", 1),
+            encoding="utf-8",
+        )
+        with mock.patch.object(self.wp, "WINDOWS_DIR", fake_dir):
+            with self.assertRaisesRegex(self.wp.WinPackageError, "must use backslashes"):
+                self.wp.verify_installer_script_contract()
+
+        script.write_text(
+            original.replace('"$\\"$INSTDIR\\uninstall\\helper.exe$\\""',
+                             "'\"$INSTDIR\\uninstall\\helper.exe\"'", 1),
+            encoding="utf-8",
+        )
+        with mock.patch.object(self.wp, "WINDOWS_DIR", fake_dir):
+            with self.assertRaisesRegex(self.wp.WinPackageError, "escape embedded quotes"):
+                self.wp.verify_installer_script_contract()
+
     def test_portable_zip_builds_verifies_stages_settings_and_visual_elements(self):
         runtime = self._make_runtime(with_full_omni=True, with_dll=False)
         ws = FakeWorkspace(self.root)

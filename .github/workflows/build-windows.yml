@@ -41,11 +41,32 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      runtime-run: ${{ steps.lookup.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Look for a tested runtime for packaging-only changes
+        id: lookup
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(python3 scripts/find-win-runtime.py)
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ -n "$run" ]; then echo "Reusing tested runtime from run $run"; fi
+
   build-windows-x86_64:
     name: Full Argon build (win64)
+    needs: plan
+    if: needs.plan.outputs.runtime-run == ''
     runs-on: ${{ inputs.runner || 'windows-latest' }}
     timeout-minutes: 360
     env:
@@ -298,10 +319,11 @@ jobs:
       - name: Initialize Argon workspace before cache restore
         run: node scripts/run-python.mjs -c "import sys; sys.path.insert(0, 'scripts'); import argon; argon.Workspace(argon.REPO, argon.default_workspace()).claim()"
 
-      - name: Cache bootstrapped Mozilla toolchains and pinned source archive
-        uses: actions/cache@v4
+      - name: Restore Mozilla toolchains and pinned source archive
+        id: toolchains
+        uses: actions/cache/restore@v4
         with:
-          path: |
+          path: &toolchain-paths |
             ${{ env.MOZBUILD_STATE_PATH }}\clang
             ${{ env.MOZBUILD_STATE_PATH }}\cbindgen
             ${{ env.MOZBUILD_STATE_PATH }}\node
@@ -314,7 +336,6 @@ jobs:
             ${{ env.MOZBUILD_STATE_PATH }}\indices
             ${{ env.CARGO_HOME }}\bin
             ${{ env.RUSTUP_HOME }}
-            ${{ env.ARGON_WORKSPACE }}\.argon-workspace.json
             ${{ env.ARGON_WORKSPACE }}\cache
           key: argon-toolchains-win64-${{ hashFiles('config/firefox.lock.json') }}
 
@@ -356,6 +377,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run doctor
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Save toolchains immediately after successful bootstrap
+        if: steps.toolchains.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: *toolchain-paths
+          key: ${{ steps.toolchains.outputs.cache-primary-key }}
 
       - name: Build Argon Browser (dist/bin/argon.exe)
         env:
@@ -417,43 +445,117 @@ jobs:
             }
           }
 
-      - name: Package and verify Windows portable ZIP and NSIS installer
+      - name: Stage the tested runtime and its smoke-test evidence
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           node scripts/run-python.mjs scripts/argon.py package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-python.mjs scripts/argon.py win-portable
+          $dist = Join-Path $env:ARGON_WORKSPACE 'obj\dist'
+          $zips = @(Get-ChildItem -LiteralPath $dist -File -Filter 'argon-*.win64.zip')
+          if ($zips.Count -ne 1) { throw "Expected one win64 runtime ZIP; found $($zips.Count)" }
+          New-Item -ItemType Directory 'win64-build-input' | Out-Null
+          Copy-Item -LiteralPath $zips[0].FullName -Destination 'win64-build-input'
+          Copy-Item "$dist\bin\application.ini", 'artifacts/chrome-smoke' -Destination 'win64-build-input' -Recurse
+
+      - name: Upload tested build input for independent packaging retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: argon-win64-build-input
+          path: win64-build-input/
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
+
+  package-windows:
+    name: Package and verify (win64)
+    needs: [plan, build-windows-x86_64]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.build-windows-x86_64.result == 'success' ||
+      (needs.build-windows-x86_64.result == 'skipped' && needs.plan.outputs.runtime-run != ''))
+    runs-on: ${{ inputs.runner || 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: argon-win64-build-input
+          run-id: ${{ needs.plan.outputs.runtime-run || github.run_id }}
+          github-token: ${{ github.token }}
+          path: win64-build-input
+
+      - name: Prepare the Windows packaging tools
+        shell: pwsh
+        run: |
+          $probe = "import sys; sys.path.insert(0, 'scripts'); import win_package; print(win_package.find_makensis() or '')"
+          $nsis = python -c $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-python.mjs scripts/argon.py win-installer
+          if (-not $nsis) {
+            if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+              throw 'Install NSIS or set ARGON_MAKENSIS on this runner; Chocolatey is unavailable.'
+            }
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $nsis = python -c $probe
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not $nsis -or -not (Test-Path -LiteralPath $nsis)) { throw 'NSIS not found after setup' }
+          "ARGON_MAKENSIS=$nsis" >> $env:GITHUB_ENV
+
+      - name: Test current Windows packaging code when reusing a prior runtime
+        if: needs.plan.outputs.runtime-run != ''
+        run: python -m unittest discover -s tests/windows -v
+
+      - name: Build and verify the portable ZIP and NSIS installer from the runtime ZIP
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem win64-build-input -File -Filter 'argon-*.win64.zip')
+          if ($zips.Count -ne 1) { throw "Expected one downloaded win64 runtime ZIP; found $($zips.Count)" }
+          $archive = $zips[0]
+          New-Item -ItemType Directory 'win64-release' | Out-Null
+          $portable = "win64-release/$($archive.BaseName)-portable.zip"
+          $installer = "win64-release/$($archive.BaseName).installer.exe"
+          python scripts/win_package.py portable --archive $archive.FullName --output $portable
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/run-python.mjs scripts/argon.py verify-windows --require-full-omni --run-portable-smoke
+          python scripts/win_package.py installer --archive $archive.FullName --output $installer
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $distDir = Join-Path $env:ARGON_WORKSPACE "obj\dist"
-          Get-Content (Join-Path $distDir "SHA256SUMS")
+          python scripts/win_package.py verify --portable $portable --installer $installer --checksums win64-release/SHA256SUMS --require-full-omni --run-portable-smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content win64-release/SHA256SUMS
+          Copy-Item 'win64-build-input/application.ini', 'win64-build-input/chrome-smoke' -Destination 'win64-release' -Recurse
 
       - name: Upload packaged Windows portable ZIP, installer, and verification artifacts
         uses: actions/upload-artifact@v4
         with:
           name: argon-windows-x86_64
-          path: |
-            ${{ env.ARGON_WORKSPACE }}\obj\dist\argon-*.win64-portable.zip
-            ${{ env.ARGON_WORKSPACE }}\obj\dist\argon-*.win64.installer.exe
-            ${{ env.ARGON_WORKSPACE }}\obj\dist\SHA256SUMS
-            ${{ env.ARGON_WORKSPACE }}\obj\dist\bin\application.ini
-            artifacts/chrome-smoke/
+          path: win64-release/
           if-no-files-found: error
+          overwrite: true
 
+  publish-windows:
+    name: Publish verified Windows release
+    needs: package-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: argon-windows-x86_64
+          path: win64-release
       - name: Publish GitHub Release (tagged builds)
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $distDir = Join-Path $env:ARGON_WORKSPACE "obj\dist"
-          Set-Location $distDir
+          Set-Location win64-release
+          $distDir = (Get-Location).Path
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
           $prerelease = @()
           if ($tag -match '(?i)(alpha|beta|rc)') {
@@ -463,9 +565,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title "Argon Browser $tag" --generate-notes @prerelease
           }
+          # Linux publishes its own SHA256SUMS to this same release.
+          Copy-Item SHA256SUMS SHA256SUMS-win64
           $assets = Get-ChildItem -File | Where-Object {
             $_.Name -like "argon-*.win64-portable.zip" -or
             $_.Name -like "argon-*.win64.installer.exe" -or
-            $_.Name -eq "SHA256SUMS"
+            $_.Name -eq "SHA256SUMS-win64"
           } | ForEach-Object { $_.FullName }
           gh release upload $tag --clobber @assets

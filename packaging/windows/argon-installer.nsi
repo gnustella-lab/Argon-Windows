@@ -44,7 +44,7 @@ SetCompressor /SOLID lzma
 !insertmacro GetParameters
 !insertmacro GetOptions
 
-!include "${ARGON_BRANDING_DIR}/branding.nsi"
+!include "${ARGON_BRANDING_DIR}\branding.nsi"
 
 !define AppName        "Argon"
 !define AppVersion     "${ARGON_APP_VERSION}"
@@ -117,17 +117,17 @@ Var ExistingDir
 
 ; Modern UI branding configuration
 !define MUI_ABORTWARNING
-!define MUI_ICON "${ARGON_BRANDING_DIR}/firefox.ico"
-!define MUI_UNICON "${ARGON_BRANDING_DIR}/firefox.ico"
+!define MUI_ICON "${ARGON_BRANDING_DIR}\firefox.ico"
+!define MUI_UNICON "${ARGON_BRANDING_DIR}\firefox.ico"
 
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_RIGHT
-!define MUI_HEADERIMAGE_BITMAP "${ARGON_BRANDING_DIR}/wizHeader.bmp"
-!define MUI_HEADERIMAGE_BITMAP_RTL "${ARGON_BRANDING_DIR}/wizHeaderRTL.bmp"
-!define MUI_HEADERIMAGE_UNBITMAP "${ARGON_BRANDING_DIR}/wizHeader.bmp"
-!define MUI_HEADERIMAGE_UNBITMAP_RTL "${ARGON_BRANDING_DIR}/wizHeaderRTL.bmp"
-!define MUI_WELCOMEFINISHPAGE_BITMAP "${ARGON_BRANDING_DIR}/wizWatermark.bmp"
-!define MUI_UNWELCOMEFINISHPAGE_BITMAP "${ARGON_BRANDING_DIR}/wizWatermark.bmp"
+!define MUI_HEADERIMAGE_BITMAP "${ARGON_BRANDING_DIR}\wizHeader.bmp"
+!define MUI_HEADERIMAGE_BITMAP_RTL "${ARGON_BRANDING_DIR}\wizHeaderRTL.bmp"
+!define MUI_HEADERIMAGE_UNBITMAP "${ARGON_BRANDING_DIR}\wizHeader.bmp"
+!define MUI_HEADERIMAGE_UNBITMAP_RTL "${ARGON_BRANDING_DIR}\wizHeaderRTL.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${ARGON_BRANDING_DIR}\wizWatermark.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "${ARGON_BRANDING_DIR}\wizWatermark.bmp"
 
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${FileMainEXE}"
@@ -178,8 +178,8 @@ Section "${BrandFullName} (Required)" SecMain
   !insertmacro WriteHiveStr "${UninstallKey}" "HelpLink" "${HelpLink}"
   !insertmacro WriteHiveStr "${UninstallKey}" "DisplayIcon" "$INSTDIR\${FileMainEXE},${IDI_APPICON_ZERO_BASED}"
   !insertmacro WriteHiveStr "${UninstallKey}" "InstallLocation" "$INSTDIR"
-  !insertmacro WriteHiveStr "${UninstallKey}" "UninstallString" '"$INSTDIR\uninstall\helper.exe"'
-  !insertmacro WriteHiveStr "${UninstallKey}" "QuietUninstallString" '"$INSTDIR\uninstall\helper.exe" /S'
+  !insertmacro WriteHiveStr "${UninstallKey}" "UninstallString" "$\"$INSTDIR\uninstall\helper.exe$\""
+  !insertmacro WriteHiveStr "${UninstallKey}" "QuietUninstallString" "$\"$INSTDIR\uninstall\helper.exe$\" /S"
   !insertmacro WriteHiveDWORD "${UninstallKey}" "NoModify" 1
   !insertmacro WriteHiveDWORD "${UninstallKey}" "NoRepair" 1
 !ifdef ARGON_ESTIMATED_SIZE_KB
@@ -200,7 +200,7 @@ Section "${BrandFullName} (Required)" SecMain
   ; Intentionally NEVER modifies UserChoice or existing HTTP/HTTPS/HTML defaults.
   !insertmacro WriteHiveStr "${StartMenuKey}" "" "${BrandShortName}"
   !insertmacro WriteHiveStr "${StartMenuKey}\DefaultIcon" "" "$INSTDIR\${FileMainEXE},${IDI_APPICON_ZERO_BASED}"
-  !insertmacro WriteHiveStr "${StartMenuKey}\shell\open\command" "" '"$INSTDIR\${FileMainEXE}"'
+  !insertmacro WriteHiveStr "${StartMenuKey}\shell\open\command" "" "$\"$INSTDIR\${FileMainEXE}$\""
   !insertmacro WriteHiveDWORD "${StartMenuKey}\InstallInfo" "IconsVisible" 1
 
   !insertmacro WriteHiveStr "${CapabilitiesKey}" "ApplicationDescription" "${BrandFullName}"
@@ -223,18 +223,18 @@ Section "${BrandFullName} (Required)" SecMain
   !insertmacro WriteHiveStr "Software\Classes\ArgonHTML" "" "${AppRegName} HTML Document"
   !insertmacro WriteHiveStr "Software\Classes\ArgonHTML" "FriendlyTypeName" "${AppRegName} HTML Document"
   !insertmacro WriteHiveStr "Software\Classes\ArgonHTML\DefaultIcon" "" "$INSTDIR\${FileMainEXE},${IDI_DOCUMENT_ZERO_BASED}"
-  !insertmacro WriteHiveStr "Software\Classes\ArgonHTML\shell\open\command" "" '"$INSTDIR\${FileMainEXE}" -osint -url "%1"'
+  !insertmacro WriteHiveStr "Software\Classes\ArgonHTML\shell\open\command" "" "$\"$INSTDIR\${FileMainEXE}$\" -osint -url $\"%1$\""
 
   !insertmacro WriteHiveStr "Software\Classes\ArgonPDF" "" "${AppRegName} PDF Document"
   !insertmacro WriteHiveStr "Software\Classes\ArgonPDF" "FriendlyTypeName" "${AppRegName} PDF Document"
   !insertmacro WriteHiveStr "Software\Classes\ArgonPDF\DefaultIcon" "" "$INSTDIR\${FileMainEXE},${IDI_DOCUMENT_PDF_ZERO_BASED}"
-  !insertmacro WriteHiveStr "Software\Classes\ArgonPDF\shell\open\command" "" '"$INSTDIR\${FileMainEXE}" -osint -url "%1"'
+  !insertmacro WriteHiveStr "Software\Classes\ArgonPDF\shell\open\command" "" "$\"$INSTDIR\${FileMainEXE}$\" -osint -url $\"%1$\""
 
   !insertmacro WriteHiveStr "Software\Classes\ArgonURL" "" "${AppRegName} URL"
   !insertmacro WriteHiveStr "Software\Classes\ArgonURL" "FriendlyTypeName" "${AppRegName} URL"
   !insertmacro WriteHiveStr "Software\Classes\ArgonURL" "URL Protocol" ""
   !insertmacro WriteHiveStr "Software\Classes\ArgonURL\DefaultIcon" "" "$INSTDIR\${FileMainEXE},${IDI_APPICON_ZERO_BASED}"
-  !insertmacro WriteHiveStr "Software\Classes\ArgonURL\shell\open\command" "" '"$INSTDIR\${FileMainEXE}" -osint -url "%1"'
+  !insertmacro WriteHiveStr "Software\Classes\ArgonURL\shell\open\command" "" "$\"$INSTDIR\${FileMainEXE}$\" -osint -url $\"%1$\""
 
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

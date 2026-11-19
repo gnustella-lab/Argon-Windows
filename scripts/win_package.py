@@ -1249,6 +1249,17 @@ def verify_installer_script_contract() -> None:
         if forbidden.lower() in active.lower():
             raise WinPackageError(f"Installer script violates policy ({forbidden!r} found)")
 
+    # NSIS splits include/File paths on "\" only (the Windows separator), so a
+    # "/" after a define is treated as part of the final filename and makensis
+    # reports "could not find" even though the file is staged correctly.
+    if "${ARGON_BRANDING_DIR}/" in active:
+        raise WinPackageError("NSIS branding paths must use backslashes")
+    # A single-quoted string containing double quotes is parsed as extra macro
+    # parameters ("WriteRegStr expects 4 parameters, got 5"); embedded quotes
+    # must use NSIS' $\" escape inside a double-quoted string.
+    if re.search(r"'\"[^\n]*\"'", active):
+        raise WinPackageError("NSIS strings must escape embedded quotes with $\"")
+
 
 def command_verify_windows(
     workspace,

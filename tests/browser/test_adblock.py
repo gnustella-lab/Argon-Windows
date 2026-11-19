@@ -139,10 +139,25 @@ class NativeAdblock(unittest.TestCase):
             click_panel('argon-adblock-save')
             Wait(browser).until(lambda b: b.execute_script("return document.getElementById('argon-adblock-error').textContent.length > 0", sandbox=None))
             self.assertEqual(browser.execute_script("return document.getElementById('argon-adblock-error').getAttribute('role')", sandbox=None), 'alert')
+            # A rejected save leaves the panel's optimistic-concurrency baseline
+            # untouched (the service asks users to reopen the panel before
+            # editing again). Reopen so the retry starts from a fresh baseline;
+            # otherwise the empty save can be rejected as a concurrent change.
+            click_panel('argon-adblock-close')
+            open_adblock_panel()
+            click_panel('argon-adblock-settings')
+            editor = browser.find_element(By.ID, 'argon-adblock-filters')
             click_panel('argon-adblock-filters')
             editor.send_keys(Keys.CONTROL + 'a' + Keys.NULL + Keys.BACK_SPACE)
             self.assertEqual(editor.get_property('value'), '')
             click_panel('argon-adblock-save')
+            # Surface a rejection immediately instead of waiting 30s for the
+            # persisted value that a rejected save can never produce.
+            Wait(browser, timeout=30).until(lambda b: b.execute_script(
+                "return document.getElementById('argon-adblock-status').textContent.includes('Salvo') || "
+                "document.getElementById('argon-adblock-error').textContent.length > 0", sandbox=None))
+            save_error = browser.execute_script("return document.getElementById('argon-adblock-error').textContent", sandbox=None)
+            self.assertEqual(save_error, '', f'Saving an empty filter list failed: {save_error}')
             Wait(browser, timeout=30).until(lambda b: b.execute_script("return ChromeUtils.importESModule('chrome://browser/content/argon/adblock/service.sys.mjs').ArgonAdblock.config.filters === ''", sandbox=None))
             persisted = browser.execute_async_script('''
                 const done=arguments[arguments.length-1];
