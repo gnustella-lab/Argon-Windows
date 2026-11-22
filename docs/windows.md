@@ -141,7 +141,7 @@ Because `browser/moz.configure` implies `MOZ_APP_VENDOR="Argon"`, `MOZ_APP_PROFI
 
 - **Install scope**: Defaults to per-user (`%LOCALAPPDATA%\Programs\Argon`, `HKCU`) for standard users or per-machine (`C:\Program Files\Argon`, `HKLM`) when run elevated, with `SetRegView 64`. Supports `/NOSTARTMENU`, `/NODESKTOP`, `/D=<dir>`, and `/S` (silent).
 - **Default browser behavior**: Registers `Software\RegisteredApplications` and `Capabilities` (`ArgonHTML`, `ArgonPDF`, `ArgonURL`) so users can opt into Argon via Windows *Settings -> Default apps*. It **never** modifies `UserChoice` or hijacks HTTP/HTTPS/HTML associations, and omits Mozilla Maintenance Service, Default Browser Agent, telemetry, and uninstall surveys.
-- **Upgrade**: Detects a running `argon.exe` via file-lock check before overwriting, preserves existing install location, and leaves `%APPDATA%\argon` and `%LOCALAPPDATA%\argon` untouched.
+- **Upgrade**: Detects a running Argon instance via file-lock probes on `argon.exe` and the memory-mapped runtime DLLs (e.g. `AccessibleMarshal.dll`), politely asks the main window to close, and preserves the existing install location while leaving `%APPDATA%\argon` and `%LOCALAPPDATA%\argon` untouched. Any payload file that remains locked (e.g. held by a live process or an AV scan) is scheduled for replacement at the next reboot (`File /REBOOTOK`) instead of raising the NSIS *"Error opening file for writing"* abort/retry/ignore dialog.
 - **Uninstall**: Runs `uninstall\helper.exe` (via *Installed apps* / *Add or remove programs*). Removes only files packaged by Argon, installer-created shortcuts, and Argon registry keys — **user profiles in `%APPDATA%\argon` and `%LOCALAPPDATA%\argon` are preserved**.
 
 ## Unsigned dev builds vs signed releases

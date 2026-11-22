@@ -139,6 +139,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("RegisteredApplications", text)
         self.assertIn(r"Software\Clients\StartMenuInternet\Argon\Capabilities", text)
         self.assertIn('FileOpen $0 "$INSTDIR\\${FileMainEXE}" a', text, "Upgrade must check running argon.exe lock")
+        self.assertIn('FileOpen $0 "$INSTDIR\\AccessibleMarshal.dll" a', text, "Upgrade must check locked AccessibleMarshal.dll")
+        self.assertIn("${RebootFlag}", text, "In-use payload files must fall back to a reboot, not an error dialog")
         self.assertIn('WriteUninstaller "$INSTDIR\\uninstall\\helper.exe"', text)
         self.assertNotIn("HideIconsCommand", text)
         self.assertNotIn("ShowIconsCommand", text)
@@ -286,6 +288,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertIn("librewolf.cfg", nsh_text)
             self.assertIn("policies.json", nsh_text)
             self.assertIn("argon_adblock.dll", nsh_text)
+            self.assertIn('File /REBOOTOK "', nsh_text, "Locked payload files must be scheduled for reboot replacement")
             out_path.write_bytes(make_minimal_pe_bytes() + b"NullsoftInst")
             return mock.Mock(returncode=0, stdout="OK", stderr="")
 

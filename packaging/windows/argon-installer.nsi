@@ -150,22 +150,62 @@ Section "${BrandFullName} (Required)" SecMain
   SectionIn RO
 
   ; Refuse to half-overwrite an actively running Argon installation on upgrade.
-  ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
-    ClearErrors
-    FileOpen $0 "$INSTDIR\${FileMainEXE}" a
-    ${If} ${Errors}
-      ${IfNot} ${Silent}
-        MessageBox MB_OK|MB_ICONEXCLAMATION "${BrandFullName} appears to be running in $INSTDIR. Please close ${BrandShortName} and retry the installation."
+  ; The main executable is not the only payload file held open by a live
+  ; browser process: AccessibleMarshal.dll and the core runtime DLLs are
+  ; memory-mapped too, which produced "Error opening file for writing"
+  ; dialogs mid-install. Probe every critical file and close Argon politely.
+  StrCpy $3 0
+  argon_lock_check:
+    StrCpy $2 0
+    ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
+      ClearErrors
+      FileOpen $0 "$INSTDIR\${FileMainEXE}" a
+      ${If} ${Errors}
+        StrCpy $2 1
+      ${Else}
+        FileClose $0
       ${EndIf}
-      Abort "Target executable is in use: $INSTDIR\${FileMainEXE}"
-    ${Else}
-      FileClose $0
     ${EndIf}
-  ${EndIf}
+    ${If} $2 == 0
+    ${AndIf} ${FileExists} "$INSTDIR\AccessibleMarshal.dll"
+      ClearErrors
+      FileOpen $0 "$INSTDIR\AccessibleMarshal.dll" a
+      ${If} ${Errors}
+        StrCpy $2 1
+      ${Else}
+        FileClose $0
+      ${EndIf}
+    ${EndIf}
+    ${If} $2 == 0
+      goto argon_lock_clear
+    ${EndIf}
+    ${If} ${Silent}
+      Abort "Target files are in use under $INSTDIR. Close ${BrandShortName} and retry the installation."
+    ${EndIf}
+    IntOp $3 $3 + 1
+    ; Ask any running ${BrandShortName} main window to close (WM_CLOSE).
+    System::Call 'user32::FindWindow(t "MozillaWindowClass", p 0) p .r0'
+    ${If} $0 != 0
+      System::Call 'user32::PostMessage(p $0, i 16, p 0, p 0)'
+    ${EndIf}
+    ${If} $3 >= 3
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${BrandFullName} appears to be running in $INSTDIR. Please close ${BrandShortName} and retry the installation." IDRETRY argon_lock_retry
+      Abort "Target files are in use: $INSTDIR\${FileMainEXE}"
+    ${EndIf}
+    argon_lock_retry:
+    Sleep 1000
+    goto argon_lock_check
+  argon_lock_clear:
 
   ; Ensure target directory exists and install payload without touching user profiles.
   SetOutPath "$INSTDIR"
   !include "${ARGON_INSTALL_FILES_NSH}"
+
+  ${If} ${RebootFlag}
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONINFORMATION "Some files of ${BrandFullName} were in use and will be replaced the next time Windows restarts. Restart Windows to complete the installation."
+    ${EndIf}
+  ${EndIf}
 
   CreateDirectory "$INSTDIR\uninstall"
   WriteUninstaller "$INSTDIR\uninstall\helper.exe"
