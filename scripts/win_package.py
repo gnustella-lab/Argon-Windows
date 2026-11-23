@@ -633,10 +633,9 @@ def _write_nsis_file_lists(payload_dir: Path, install_nsh: Path, uninstall_nsh: 
         out_dir = f"$INSTDIR\\{rel_dir}" if rel_dir else "$INSTDIR"
         install_lines.append(f'SetOutPath "{_nsis_escape(out_dir)}"')
         for fpath in by_dir[rel_dir]:
-            # /REBOOTOK: a payload file locked by a still-running Argon process
-            # is scheduled for replacement on the next reboot instead of raising
-            # the NSIS "Error opening file for writing" abort/retry/ignore dialog.
-            install_lines.append(f'File /REBOOTOK "{_nsis_escape(os.fspath(fpath))}"')
+            # NSIS `File` has no /REBOOTOK flag; locked payload files are handled
+            # by the pre-install lock probe in argon-installer.nsi instead.
+            install_lines.append(f'File "{_nsis_escape(os.fspath(fpath))}"')
     install_lines.append('SetOutPath "$INSTDIR"')
     install_nsh.write_text("\n".join(install_lines) + "\n", encoding="utf-8")
 

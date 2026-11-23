@@ -201,12 +201,6 @@ Section "${BrandFullName} (Required)" SecMain
   SetOutPath "$INSTDIR"
   !include "${ARGON_INSTALL_FILES_NSH}"
 
-  ${If} ${RebootFlag}
-    ${IfNot} ${Silent}
-      MessageBox MB_OK|MB_ICONINFORMATION "Some files of ${BrandFullName} were in use and will be replaced the next time Windows restarts. Restart Windows to complete the installation."
-    ${EndIf}
-  ${EndIf}
-
   CreateDirectory "$INSTDIR\uninstall"
   WriteUninstaller "$INSTDIR\uninstall\helper.exe"
 

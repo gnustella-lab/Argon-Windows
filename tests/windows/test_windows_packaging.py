@@ -140,7 +140,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn(r"Software\Clients\StartMenuInternet\Argon\Capabilities", text)
         self.assertIn('FileOpen $0 "$INSTDIR\\${FileMainEXE}" a', text, "Upgrade must check running argon.exe lock")
         self.assertIn('FileOpen $0 "$INSTDIR\\AccessibleMarshal.dll" a', text, "Upgrade must check locked AccessibleMarshal.dll")
-        self.assertIn("${RebootFlag}", text, "In-use payload files must fall back to a reboot, not an error dialog")
+        self.assertNotIn("File /REBOOTOK", text, "NSIS `File` has no /REBOOTOK flag; makensis rejects it")
         self.assertIn('WriteUninstaller "$INSTDIR\\uninstall\\helper.exe"', text)
         self.assertNotIn("HideIconsCommand", text)
         self.assertNotIn("ShowIconsCommand", text)
@@ -285,10 +285,14 @@ class WindowsPackagingTests(unittest.TestCase):
             out_path = Path(out_arg.split("=", 1)[1])
             install_nsh = Path(next(arg for arg in cmd if arg.startswith("-DARGON_INSTALL_FILES_NSH=")).split("=", 1)[1])
             nsh_text = install_nsh.read_text(encoding="utf-8")
+            uninstall_text = Path(
+                next(arg for arg in cmd if arg.startswith("-DARGON_UNINSTALL_FILES_NSH=")).split("=", 1)[1]
+            ).read_text(encoding="utf-8")
             self.assertIn("librewolf.cfg", nsh_text)
             self.assertIn("policies.json", nsh_text)
             self.assertIn("argon_adblock.dll", nsh_text)
-            self.assertIn('File /REBOOTOK "', nsh_text, "Locked payload files must be scheduled for reboot replacement")
+            self.assertIn('Delete /REBOOTOK "', uninstall_text, "Locked payload files must be deletable on reboot during uninstall")
+            self.assertNotIn('File /REBOOTOK', nsh_text, "NSIS `File` has no /REBOOTOK flag")
             out_path.write_bytes(make_minimal_pe_bytes() + b"NullsoftInst")
             return mock.Mock(returncode=0, stdout="OK", stderr="")
 
